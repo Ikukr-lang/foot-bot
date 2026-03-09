@@ -50,6 +50,7 @@ class AdminStates(StatesGroup):
     waiting_match_text = State()
     waiting_match_file = State()
     waiting_support_reply = State()
+    waiting_user_search = State()
 
 class UserStates(StatesGroup):
     waiting_support = State()
@@ -93,6 +94,7 @@ async def admin_keyboard():
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
         [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
+        [InlineKeyboardButton(text="📈 Подписки", callback_data="admin_subscriptions")],
     ])
 
 # ====================== СЛОТЫ ======================
@@ -158,7 +160,8 @@ async def get_subscription(user_id: int):
             if not row:
                 return "free", None
             sub, end = row
-            if end and datetime.fromisoformat(end) < moscow_now().replace(tzinfo=None):
+            now = moscow_now().replace(tzinfo=None)
+            if end and datetime.fromisoformat(end) < now:
                 await db.execute("UPDATE users SET subscription='free', sub_end=NULL WHERE telegram_id=?", (user_id,))
                 await db.commit()
                 try:
@@ -183,6 +186,46 @@ async def increment_daily(user_id: int):
             VALUES (?, ?, COALESCE((SELECT count + 1 FROM daily_usage WHERE telegram_id=? AND date=?), 1))
         """, (user_id, today, user_id, today))
         await db.commit()
+
+async def get_sub_counts():
+    now_str = moscow_now().replace(tzinfo=None).isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        subs = ['silver_14', 'silver_28', 'gold_14', 'gold_28']
+        counts = {}
+        for sub in subs:
+            async with db.execute("SELECT COUNT(*) FROM users WHERE subscription = ? AND (sub_end > ? OR sub_end IS NULL)", (sub, now_str)) as cur:
+                counts[sub] = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM users WHERE subscription = 'free' OR sub_end <= ?", (now_str,)) as cur:
+            counts['free'] = (await cur.fetchone())[0]
+    return counts
+
+async def get_all_processed_users():
+    now_str = moscow_now().replace(tzinfo=None).isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id, username, subscription, sub_end FROM users ORDER BY telegram_id") as cur:
+            rows = await cur.fetchall()
+        processed = []
+        for uid, uname, sub, end in rows:
+            if end and end < now_str:
+                sub = 'free'
+                await db.execute("UPDATE users SET subscription='free', sub_end=NULL WHERE telegram_id=?", (uid,))
+            processed.append((uid, uname or 'none', sub))
+        await db.commit()
+    return processed
+
+async def get_matching_users(search: str):
+    now_str = moscow_now().replace(tzinfo=None).isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id, username, subscription, sub_end FROM users WHERE username LIKE ? ORDER BY telegram_id", (f"%{search}%",)) as cur:
+            rows = await cur.fetchall()
+        processed = []
+        for uid, uname, sub, end in rows:
+            if end and end < now_str:
+                sub = 'free'
+                await db.execute("UPDATE users SET subscription='free', sub_end=NULL WHERE telegram_id=?", (uid,))
+            processed.append((uid, uname or 'none', sub))
+        await db.commit()
+    return processed
 
 # ====================== СТАРТ ======================
 @dp.message(Command("start"))
@@ -219,6 +262,95 @@ async def check_admin_pass(message: Message, state: FSMContext):
         admin_message_id = msg.message_id
     else:
         await message.answer("❌ Неверный пароль!")
+
+@dp.callback_query(F.data == "admin_subscriptions")
+async def admin_subscriptions(callback: CallbackQuery):
+    counts = await get_sub_counts()
+    text = "<b>Подписки:</b>\n"
+    for sub in ['silver_14', 'silver_28', 'gold_14', 'gold_28']:
+        text += f"{get_sub_name(sub)}: {counts.get(sub, 0)}\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Показать всех пользователей", callback_data="show_all_users")],
+        [InlineKeyboardButton(text="Поиск по @ник", callback_data="admin_search_user")],
+        [InlineKeyboardButton(text="← В меню админа", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb)
+
+@dp.callback_query(F.data == "show_all_users")
+async def show_all_users(callback: CallbackQuery):
+    users = await get_all_processed_users()
+    text = "<b>Все пользователи:</b>\nВыберите для управления:"
+    kb = []
+    for uid, uname, sub in users:
+        btn_text = f"{uid} @{uname} ({get_sub_name(sub)})"
+        kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"manage_user_{uid}")])
+    kb.append([InlineKeyboardButton(text="← К подпискам", callback_data="admin_subscriptions")])
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data == "admin_search_user")
+async def admin_search_user(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_user_search)
+    await callback.message.edit_text("Введите @ник для поиска (без @):")
+
+@dp.message(AdminStates.waiting_user_search)
+async def process_user_search(message: Message, state: FSMContext):
+    search = message.text.strip()
+    await state.clear()
+    users = await get_matching_users(search)
+    text = f"<b>Результаты поиска '{search}':</b>\nВыберите для управления:"
+    kb = []
+    for uid, uname, sub in users:
+        btn_text = f"{uid} @{uname} ({get_sub_name(sub)})"
+        kb.append([InlineKeyboardButton(text=btn_text, callback_data=f"manage_user_{uid}")])
+    kb.append([InlineKeyboardButton(text="← К подпискам", callback_data="admin_subscriptions")])
+    await message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("manage_user_"))
+async def manage_user(callback: CallbackQuery):
+    uid = int(callback.data.split("_")[-1])
+    sub, end = await get_subscription(uid)
+    text = f"<b>Пользователь ID: {uid}</b>\nТекущая подписка: {get_sub_name(sub)}"
+    if end:
+        text += f"\nИстекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}"
+    kb = [
+        [InlineKeyboardButton(text="Подарить Silver 2 нед", callback_data=f"gift_{uid}_silver_14")],
+        [InlineKeyboardButton(text="Подарить Silver месяц", callback_data=f"gift_{uid}_silver_28")],
+        [InlineKeyboardButton(text="Подарить Gold 2 нед", callback_data=f"gift_{uid}_gold_14")],
+        [InlineKeyboardButton(text="Подарить Gold месяц", callback_data=f"gift_{uid}_gold_28")],
+        [InlineKeyboardButton(text="Удалить подписку", callback_data=f"remove_sub_{uid}")],
+        [InlineKeyboardButton(text="← К подпискам", callback_data="admin_subscriptions")]
+    ]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("gift_"))
+async def gift_subscription(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    uid = int(parts[1])
+    sub_type = "_".join(parts[2:])
+    days = 14 if "14" in sub_type else 28
+    until = (moscow_now() + timedelta(days=days)).replace(tzinfo=None).isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?", (sub_type, until, uid))
+        await db.commit()
+    try:
+        await bot.send_message(uid, f"🎁 Администратор подарил вам подписку <b>{get_sub_name(sub_type)}</b> на {days} дней!")
+    except:
+        pass
+    await callback.answer("Подписка подарена!")
+    await callback.message.edit_text("✅ Подписка подарена!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="← К подпискам", callback_data="admin_subscriptions")]]))
+
+@dp.callback_query(F.data.startswith("remove_sub_"))
+async def remove_subscription(callback: CallbackQuery):
+    uid = int(callback.data.split("_")[-1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE users SET subscription='free', sub_end=NULL WHERE telegram_id=?", (uid,))
+        await db.commit()
+    try:
+        await bot.send_message(uid, "❌ Ваша подписка была удалена администратором.")
+    except:
+        pass
+    await callback.answer("Подписка удалена!")
+    await callback.message.edit_text("✅ Подписка удалена!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="← К подпискам", callback_data="admin_subscriptions")]]))
 
 # ====================== ДОБАВЛЕНИЕ МАТЧЕЙ ======================
 @dp.callback_query(F.data == "admin_add_match")
