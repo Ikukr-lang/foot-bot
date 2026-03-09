@@ -564,7 +564,7 @@ async def already_accessed(callback: CallbackQuery):
 # ====================== ПЛАТЕЖИ ======================
 @dp.message(F.text == "Подписка")
 async def show_sub_menu(message: Message):
-    await message.answer("Выберите подписку ниже 👇\n\n<b>Silver - 2 недели </b> 72 матча<b>Silver - месяц</b> 164 матча \n<b>Gold - 2 недели</b> 124 матча \n<b>Gold - месяц</b> 280 матчей\n\nПосле оплаты лимиты увеличатся автоматически!", reply_markup=payment_keyboard())
+    await message.answer("Выберите подписку ниже 👇\n\n<b>Silver - 2 недели </b> 72 матча\n<b>Silver - месяц</b> 164 матча \n<b>Gold - 2 недели</b> 124 матча \n<b>Gold - месяц</b> 280 матчей\n\nПосле оплаты лимиты увеличатся автоматически!", reply_markup=payment_keyboard())
 
 @dp.callback_query(F.data.startswith("sub_"))
 async def create_invoice(callback: CallbackQuery):
