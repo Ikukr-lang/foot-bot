@@ -15,17 +15,17 @@ import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram.client.default import DefaultBotProperties
 
-# ====================== НАСТРОЙКИ justrunmy.app ======================
+# ====================== НАСТРОЙКИ ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")          # пример: -1001234567890
+CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
 ADMIN_PASSWORD = "ADMIN_PASSWORD"
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN не задан в переменных окружения justrunmy.app!")
+    raise ValueError("❌ BOT_TOKEN не задан в переменных окружения!")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
@@ -38,13 +38,10 @@ admin_message_id = None
 # ====================== FSM ======================
 class AdminStates(StatesGroup):
     waiting_password = State()
+    waiting_match_text = State()
+    waiting_match_file = State()
     waiting_support_reply = State()
     waiting_gift_user = State()
-    
-    # === НОВЫЕ СОСТОЯНИЯ ДЛЯ СЛОТОВ ===
-    waiting_slot_text = State()
-    waiting_slot_file = State()
-    adding_matches = State()
 
 class UserStates(StatesGroup):
     waiting_support = State()
@@ -83,12 +80,37 @@ async def admin_keyboard():
     count = await get_new_tickets_count()
     support_text = "💬 Поддержка" if count == 0 else f"💬 Поддержка ({count})"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить матч (слоты 1-20)", callback_data="admin_add_match")],
+        [InlineKeyboardButton(text="➕ Добавить матч", callback_data="admin_add_match")],
+        [InlineKeyboardButton(text="📋 Просмотр слотов", callback_data="admin_view_slots")],
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
         [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
         [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
     ])
+
+# ====================== СЛОТЫ ======================
+async def get_all_slots():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT slot, event_text, is_published 
+            FROM matches ORDER BY slot
+        """) as cur:
+            return await cur.fetchall()
+
+async def slots_keyboard():
+    slots_data = await get_all_slots()
+    occupied = {row[0]: row[1][:35] + "..." if len(row[1]) > 35 else row[1] for row in slots_data}
+    
+    kb = []
+    for i in range(1, 21):
+        if i in occupied:
+            text = f"✅ Слот {i} | {occupied[i]}"
+        else:
+            text = f"□ Слот {i} — свободен"
+        kb.append([InlineKeyboardButton(text=text, callback_data=f"add_to_slot_{i}")])
+    
+    kb.append([InlineKeyboardButton(text="← В меню админа", callback_data="back_to_admin")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 # ====================== БАЗА ДАННЫХ ======================
 async def init_db():
@@ -103,6 +125,7 @@ async def init_db():
             );
             CREATE TABLE IF NOT EXISTS matches (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot INTEGER UNIQUE,
                 event_text TEXT,
                 file_id TEXT,
                 is_published INTEGER DEFAULT 0
@@ -127,6 +150,25 @@ async def init_db():
             );
         ''')
         await db.commit()
+
+        # Миграция: добавляем колонку slot (если ещё нет)
+        try:
+            await db.execute("ALTER TABLE matches ADD COLUMN slot INTEGER UNIQUE")
+            await db.commit()
+        except:
+            pass
+
+        # Автозаполнение слотов для старых матчей
+        async with db.execute("SELECT id FROM matches WHERE slot IS NULL ORDER BY id") as cur:
+            old_matches = await cur.fetchall()
+        for i, (mid,) in enumerate(old_matches, 1):
+            if i > 20:
+                break
+            try:
+                await db.execute("UPDATE matches SET slot = ? WHERE id = ?", (i, mid))
+                await db.commit()
+            except:
+                pass
 
 async def get_users_count():
     async with aiosqlite.connect(DB_NAME) as db:
@@ -165,7 +207,7 @@ def get_max_matches(sub_type: str, weekday: int) -> int:
     if sub_type == "gold_14": return [5,5,5,5,8,17,17][weekday]
     if sub_type == "silver_28": return [3,3,3,3,5,12,12][weekday]
     if sub_type == "silver_14": return [3,3,3,3,5,10,10][weekday]
-    return [1,1,1,1,2,2,2][weekday]  # free
+    return [1,1,1,1,2,2,2][weekday]
 
 async def get_daily_count(user_id: int) -> int:
     today = datetime.now().date().isoformat()
@@ -197,8 +239,6 @@ async def cmd_start(message: Message):
 Травмы, офиц. матчи, положение в турнирной таблице, забитые - пропущенные мячи, моменты xG. 
 Анализируя всю статистику предлагаю варианты с наиболее успешным исходом.
 
-Тебе не нужно тратить огромное количество времени для поиска статистики и анализа матча, так как это я уже сделал за тебя. 
-
 Все матчи и статистика уже доступны ~ ниже кнопка: «Матчи»
 Подпишись на наш канал чтобы быть в курсе событий ~ ниже кнопка: «Канал»
 Посмотри какие лимиты доступны ~ ниже кнопка: «Лимит»
@@ -225,94 +265,74 @@ async def check_admin_pass(message: Message, state: FSMContext):
     else:
         await message.answer("❌ Неверный пароль!")
 
-# ====================== НОВАЯ СИСТЕМА ДОБАВЛЕНИЯ ЧЕРЕЗ СЛОТЫ 1-20 ======================
 @dp.callback_query(F.data == "admin_add_match")
-async def start_slot_adding(callback: CallbackQuery, state: FSMContext):
-    """Начинаем добавление слота 1"""
-    await state.set_state(AdminStates.waiting_slot_text)
-    await state.update_data(current_slot=1)
+async def admin_add_match(callback: CallbackQuery):
     await callback.message.edit_text(
-        "🗂 <b>Система слотов 1-20</b>\n\n"
-        "<b>Слот 1</b>\n\n"
-        "Отправьте текст события (матч):"
+        "<b>Выберите слот для нового матча (1-20):</b>",
+        reply_markup=await slots_keyboard()
     )
 
-@dp.message(AdminStates.waiting_slot_text)
-async def process_slot_text(message: Message, state: FSMContext):
-    """Сохраняем текст и просим файл"""
-    await state.update_data(event_text=message.text)
-    await state.set_state(AdminStates.waiting_slot_file)
+@dp.callback_query(F.data.startswith("add_to_slot_"))
+async def select_slot_for_match(callback: CallbackQuery, state: FSMContext):
+    slot = int(callback.data.split("_")[-1])
     
-    data = await state.get_data()
-    slot = data["current_slot"]
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT 1 FROM matches WHERE slot=?", (slot,)) as cur:
+            if await cur.fetchone():
+                await callback.answer("❌ Этот слот уже занят!", show_alert=True)
+                return
     
-    await message.answer(f"Теперь отправьте файл (документ) для <b>Слота {slot}</b>:")
+    await state.update_data(slot=slot)
+    await state.set_state(AdminStates.waiting_match_text)
+    await callback.message.edit_text(f"✅ Выбран слот <b>{slot}</b>\n\nОтправьте текст матча:")
 
-@dp.message(AdminStates.waiting_slot_file, F.document)
-async def process_slot_file(message: Message, state: FSMContext):
-    """Сохраняем матч в БД и показываем кнопки"""
+@dp.message(AdminStates.waiting_match_text)
+async def save_match_text(message: Message, state: FSMContext):
+    await state.update_data(event_text=message.text)
+    await state.set_state(AdminStates.waiting_match_file)
+    await message.answer("Теперь отправьте файл (документ):")
+
+@dp.message(AdminStates.waiting_match_file, F.document)
+async def save_match_file(message: Message, state: FSMContext):
     data = await state.get_data()
-    slot = data["current_slot"]
-    event_text = data["event_text"]
+    slot = data["slot"]
     file_id = message.document.file_id
 
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute(
-            "INSERT INTO matches (event_text, file_id, is_published) VALUES (?, ?, 0)",
-            (event_text, file_id)
+            "INSERT INTO matches (slot, event_text, file_id, is_published) VALUES (?, ?, ?, 0)",
+            (slot, data["event_text"], file_id)
         )
         await db.commit()
 
-    await message.answer(
-        f"✅ <b>Слот {slot}</b> успешно сохранён!\n\n"
-        f"Матч: <i>{event_text}</i>"
-    )
-
-    # === ДВЕ КНОПКИ ПОСЛЕ КАЖДОГО ДОБАВЛЕНИЯ ===
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"➕ Добавить слот {slot + 1}", callback_data="next_slot")],
-        [InlineKeyboardButton(text="Нет, завершить", callback_data="finish_slots")]
-    ])
-
-    await message.answer("Добавить следующий слот?", reply_markup=kb)
-    await state.set_state(AdminStates.adding_matches)
-
-@dp.callback_query(F.data == "next_slot")
-async def next_slot(callback: CallbackQuery, state: FSMContext):
-    """Переходим к следующему слоту"""
-    data = await state.get_data()
-    next_slot_num = data.get("current_slot", 1) + 1
-    
-    if next_slot_num > 20:
-        await callback.answer("❌ Максимум 20 слотов!", show_alert=True)
-        return
-    
-    await state.update_data(current_slot=next_slot_num)
-    await state.set_state(AdminStates.waiting_slot_text)
-    
-    await callback.message.edit_text(
-        f"🗂 <b>Система слотов 1-20</b>\n\n"
-        f"<b>Слот {next_slot_num}</b>\n\n"
-        "Отправьте текст события (матч):"
-    )
-
-@dp.callback_query(F.data == "finish_slots")
-async def finish_slots(callback: CallbackQuery, state: FSMContext):
-    """Завершаем сессию добавления"""
     await state.clear()
-    await callback.message.edit_text(
-        "✅ Добавление матчей через слоты завершено!\n\n"
-        "Все матчи сохранены как <b>неопубликованные</b>.\n"
-        "Используйте кнопку «📢 Опубликовать все матчи», когда будете готовы."
-    )
+    await message.answer(f"✅ Матч сохранён в <b>Слот {slot}</b>!")
+    await message.answer("Админ-панель:", reply_markup=await admin_keyboard())
 
-# ====================== ОСТАЛЬНЫЕ АДМИН ФУНКЦИИ ======================
 @dp.callback_query(F.data == "admin_publish")
 async def publish_matches(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE matches SET is_published = 1 WHERE is_published = 0")
         await db.commit()
     await callback.message.edit_text("✅ Все матчи опубликованы!")
+
+@dp.callback_query(F.data == "admin_view_slots")
+async def admin_view_slots(callback: CallbackQuery):
+    slots = await get_all_slots()
+    text = "<b>📋 Все слоты (1-20):</b>\n\n"
+    for i in range(1, 21):
+        found = next((s for s in slots if s[0] == i), None)
+        if found:
+            status = "✅ опубликован" if found[2] else "⏳ не опубликован"
+            text += f"<b>{i}.</b> {found[1][:60]}...\n   {status}\n\n"
+        else:
+            text += f"{i}. <i>пусто</i>\n"
+    kb = [[InlineKeyboardButton(text="← В меню админа", callback_data="back_to_admin")]]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data == "back_to_admin")
+async def back_to_admin_menu(callback: CallbackQuery):
+    await callback.message.edit_text("✅ Добро пожаловать в админ-панель!", reply_markup=await admin_keyboard())
 
 @dp.callback_query(F.data == "admin_support")
 async def admin_show_support(callback: CallbackQuery):
@@ -381,7 +401,10 @@ async def show_matches(message: Message):
         return
 
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT id, event_text FROM matches WHERE is_published=1") as cur:
+        async with db.execute("""
+            SELECT id, slot, event_text FROM matches 
+            WHERE is_published=1 ORDER BY slot
+        """) as cur:
             rows = await cur.fetchall()
 
     if not rows:
@@ -389,19 +412,21 @@ async def show_matches(message: Message):
         return
 
     kb = []
-    for mid, text in rows:
+    for mid, slot, text in rows:
         async with aiosqlite.connect(DB_NAME) as db:
             async with db.execute(
                 "SELECT 1 FROM user_match_access WHERE telegram_id=? AND match_id=?",
                 (message.from_user.id, mid)
             ) as cur:
                 already = await cur.fetchone()
+        
+        display = f"{slot}. {text}"
         kb.append([InlineKeyboardButton(
-            text=f"✅ {text}" if already else text,
+            text=f"✅ {display}" if already else display,
             callback_data=f"match_{mid}" if not already else f"already_{mid}"
         )])
 
-    await message.answer("Выберите матч:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await message.answer("📋 Выберите матч по слоту:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("match_"))
 async def give_match_file(callback: CallbackQuery):
@@ -469,7 +494,7 @@ async def create_invoice(callback: CallbackQuery):
 @dp.message(F.successful_payment)
 async def payment_success(message: Message):
     payload = message.successful_payment.invoice_payload
-    sub_type = payload[4:]  # "silver_14" etc.
+    sub_type = payload[4:]
     days = 14 if "14" in sub_type else 28
     until = (datetime.now() + timedelta(days=days)).isoformat()
 
@@ -556,10 +581,9 @@ async def save_support(message: Message, state: FSMContext):
 async def main():
     await init_db()
     scheduler.start()
-    logging.info("🚀 Бот запущен на justrunmy.app")
+    logging.info("🚀 Бот запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
-</DOCUMENT>
