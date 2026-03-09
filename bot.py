@@ -21,7 +21,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
-ADMIN_PASSWORD = "ADMIN_PASSWORD"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN:
@@ -245,11 +245,6 @@ async def cmd_start(message: Message):
 Травмы, офиц. матчи, положение в турнирной таблице, забитые - пропущенные мячи, моменты xG. 
 Анализируя всю статистику предлагаю варианты с наиболее успешным исходом.
 
-Все матчи и статистика уже доступны ~ ниже кнопка: «Матчи»
-Подпишись на наш канал чтобы быть в курсе событий ~ ниже кнопка: «Канал»
-Посмотри какие лимиты доступны ~ ниже кнопка: «Лимит»
-
-⛳️ Добро пожаловать!"""
     await message.answer(text, reply_markup=main_keyboard())
 
 # ====================== АДМИН ======================
@@ -532,7 +527,7 @@ async def show_matches(message: Message):
         display = f"{slot}. {text}"
         kb.append([InlineKeyboardButton(text=f"✅ {display}" if already else display,
                                         callback_data=f"match_{mid}" if not already else f"already_{mid}")])
-    await message.answer("📋 Выберите матч по слоту:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await message.answer("📋 Выберите матч:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("match_"))
 async def give_match_file(callback: CallbackQuery):
@@ -543,7 +538,7 @@ async def give_match_file(callback: CallbackQuery):
     opened = await get_daily_count(callback.from_user.id)
 
     if opened >= max_m:
-        await callback.answer("Лимит на сегодня исчерпан. Купите подписку!", show_alert=True)
+        await callback.answer("⚠️ Лимит на сегодня исчерпан. Приобретите -> 💎 подписку!", show_alert=True)
         return
 
     async with aiosqlite.connect(DB_NAME) as db:
@@ -560,17 +555,17 @@ async def give_match_file(callback: CallbackQuery):
         await db.commit()
         if cur.rowcount == 0:
             # Запись уже существовала — не отправляем файл и не инкрементируем лимит
-            await callback.answer("Вы уже получили этот файл.")
+            await callback.answer("⚠️ Вы уже получили файл этого матча.")
             return
 
     # Если новая запись вставлена, инкрементируем и отправляем
     await increment_daily(callback.from_user.id)
-    await callback.message.answer_document(file_id, caption="📊 Анализ и прогноз от Нейроаналитика")
+    await callback.message.answer_document(file_id, caption="📊 Анализ и прогноз от Нейроаналитика 🤖")
     await callback.answer("✅ Файл отправлен!")
 
 @dp.callback_query(F.data.startswith("already_"))
 async def already_accessed(callback: CallbackQuery):
-    await callback.answer("Вы уже получили этот файл.")
+    await callback.answer("⚠️ Вы уже получили файл этого матча.")
 
 # ====================== ПЛАТЕЖИ ======================
 @dp.message(F.text == "Подписка")
@@ -616,7 +611,7 @@ async def payment_success(message: Message):
             await db.execute("INSERT INTO users (telegram_id, username, subscription, sub_end) VALUES (?, ?, ?, ?)", (user_id, username, sub_type, until))
         await db.commit()
 
-    await message.answer(f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
+    await message.answer(f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\nТеперь у тебя повышенные лимиты")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
 @dp.message(F.text == "Канал")
@@ -648,7 +643,7 @@ async def show_limits(message: Message):
             current_val = limits_list[i]
     group_days = days[current_start] if current_start == 6 else f"{days[current_start]}-{days[6]}"
     groups.append(f"{group_days} ~ {current_val}")
-    text += "\n\nЛимиты по дням: " + ", ".join(groups)
+    text += "\n\nПо дням: " + ", ".join(groups)
 
     await message.answer(text)
 
