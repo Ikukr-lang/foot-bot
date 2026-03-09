@@ -59,10 +59,8 @@ class UserStates(StatesGroup):
 def main_keyboard():
     kb = ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="Матчи"), KeyboardButton(text="Лимит")],
-        [KeyboardButton(text="Канал"), KeyboardButton(text="Live футбол")],
-        [KeyboardButton(text="Поддержка")],
-        [KeyboardButton(text="Подписка")],
-        [KeyboardButton(text="Политика и согласие")]
+        [KeyboardButton(text="Канал"), KeyboardButton(text="Live футбол"), KeyboardButton(text="Поддержка")],
+        [KeyboardButton(text="Подписка"), KeyboardButton(text="Политика и согласие")]
     ], resize_keyboard=True)
     return kb
 
