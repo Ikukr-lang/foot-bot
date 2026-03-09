@@ -95,6 +95,7 @@ async def admin_keyboard():
         [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
         [InlineKeyboardButton(text="📈 Подписки", callback_data="admin_subscriptions")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")],
     ])
 
 # ====================== СЛОТЫ ======================
@@ -327,8 +328,13 @@ async def gift_subscription(callback: CallbackQuery):
     parts = callback.data.split("_")
     uid = int(parts[1])
     sub_type = "_".join(parts[2:])
+    current_sub, current_end = await get_subscription(uid)
     days = 14 if "14" in sub_type else 28
-    until = (moscow_now() + timedelta(days=days)).replace(tzinfo=None).isoformat()
+    if current_sub == sub_type and current_end:
+        start_date = datetime.fromisoformat(current_end)
+    else:
+        start_date = moscow_now().replace(tzinfo=None)
+    until = (start_date + timedelta(days=days)).isoformat()
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?", (sub_type, until, uid))
         await db.commit()
@@ -351,6 +357,10 @@ async def remove_subscription(callback: CallbackQuery):
         pass
     await callback.answer("Подписка удалена!")
     await callback.message.edit_text("✅ Подписка удалена!", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="← К подпискам", callback_data="admin_subscriptions")]]))
+
+@dp.callback_query(F.data == "admin_close")
+async def admin_close(callback: CallbackQuery):
+    await callback.message.delete()
 
 # ====================== ДОБАВЛЕНИЕ МАТЧЕЙ ======================
 @dp.callback_query(F.data == "admin_add_match")
