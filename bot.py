@@ -602,10 +602,12 @@ async def payment_success(message: Message):
     sub_type = payload.removeprefix("sub_")
     days = 14 if "14" in sub_type else 28
     until = (moscow_now() + timedelta(days=days)).replace(tzinfo=None).isoformat()
-
+    user_id = message.from_user.id
+    username = message.from_user.username
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?",
-                         (sub_type, until, message.from_user.id))
+        cur = await db.execute("UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?", (sub_type, until, user_id))
+        if cur.rowcount == 0:
+            await db.execute("INSERT INTO users (telegram_id, username, subscription, sub_end) VALUES (?, ?, ?, ?)", (user_id, username, sub_type, until))
         await db.commit()
 
     await message.answer(f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
