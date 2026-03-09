@@ -538,7 +538,7 @@ async def give_match_file(callback: CallbackQuery):
     opened = await get_daily_count(callback.from_user.id)
 
     if opened >= max_m:
-        await callback.answer("Лимит на сегодня исчерпан. Купите подписку!", show_alert=True)
+        await callback.answer("⚠️ Лимит на сегодня исчерпан. Приобретите -> 💎 подписку!", show_alert=True)
         return
 
     async with aiosqlite.connect(DB_NAME) as db:
