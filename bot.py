@@ -13,7 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from aiogram import DefaultBotProperties
+from aiogram.client.default import DefaultBotProperties
 
 # ====================== НАСТРОЙКИ justrunmy.app ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
