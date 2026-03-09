@@ -549,8 +549,11 @@ async def give_match_file(callback: CallbackQuery):
             return
         file_id = row[0]
 
-        await db.execute("INSERT OR IGNORE INTO user_match_access (telegram_id, match_id) VALUES (?, ?)", 
+        cur = await db.execute("INSERT OR IGNORE INTO user_match_access (telegram_id, match_id) VALUES (?, ?)", 
                          (callback.from_user.id, match_id))
+        if cur.rowcount == 0:
+            await callback.answer("⚠️ Вы уже получили файл этого матча.", show_alert=True)
+            return
         await db.commit()
 
     await increment_daily(callback.from_user.id)
