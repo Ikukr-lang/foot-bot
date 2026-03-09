@@ -38,6 +38,8 @@ class AdminStates(StatesGroup):
     waiting_support_reply = State()
     waiting_review_action = State()
     waiting_gift_user = State()
+    waiting_limit_text = State()
+    waiting_limit_file = State()
 
 class UserStates(StatesGroup):
     waiting_review = State()
@@ -74,6 +76,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
         [InlineKeyboardButton(text="💬 Поддержка", callback_data="admin_support")],
         [InlineKeyboardButton(text="⭐ Отзывы", callback_data="admin_reviews")],
+        [InlineKeyboardButton(text="📊 Лимиты", callback_data="admin_limits")],
         [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
         [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
     ])
@@ -118,6 +121,11 @@ async def init_db():
                 text TEXT,
                 status TEXT DEFAULT 'new',
                 admin_reply TEXT
+            );
+            CREATE TABLE IF NOT EXISTS app_info (
+                key TEXT PRIMARY KEY,
+                text TEXT,
+                file_id TEXT
             );
         ''')
         await db.commit()
@@ -249,6 +257,119 @@ async def publish_matches(callback: CallbackQuery):
         await db.commit()
     await callback.message.edit_text("✅ Все матчи опубликованы!")
 
+@dp.callback_query(F.data == "admin_reviews")
+async def admin_show_reviews(callback: CallbackQuery):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT id, telegram_id, text FROM reviews WHERE status = 'pending'") as cur:
+            rows = await cur.fetchall()
+    if not rows:
+        await callback.message.edit_text("Нет отзывов на модерации.")
+        return
+    await callback.message.edit_text("Отзывы на модерации:")
+    for r in rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Одобрить", callback_data=f"approve_review_{r[0]}"),
+                InlineKeyboardButton(text="Отклонить", callback_data=f"reject_review_{r[0]}")
+            ]
+        ])
+        await callback.message.answer(f"Отзыв от {r[1]}: {r[2]}", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("approve_review_"))
+async def approve_review(callback: CallbackQuery):
+    review_id = int(callback.data.split("_")[2])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE reviews SET status = 'approved' WHERE id = ?", (review_id,))
+        await db.commit()
+    await callback.answer("Отзыв одобрен!")
+    await callback.message.delete()
+
+@dp.callback_query(F.data.startswith("reject_review_"))
+async def reject_review(callback: CallbackQuery):
+    review_id = int(callback.data.split("_")[2])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE reviews SET status = 'rejected' WHERE id = ?", (review_id,))
+        await db.commit()
+    await callback.answer("Отзыв отклонен!")
+    await callback.message.delete()
+
+@dp.callback_query(F.data == "admin_support")
+async def admin_show_support(callback: CallbackQuery):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT id, telegram_id, text FROM support_tickets WHERE status = 'new'") as cur:
+            rows = await cur.fetchall()
+    if not rows:
+        await callback.message.edit_text("Нет новых обращений в поддержку.")
+        return
+    await callback.message.edit_text("Обращения в поддержку:")
+    for r in rows:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Ответить", callback_data=f"reply_ticket_{r[0]}")]
+        ])
+        await callback.message.answer(f"Обращение от {r[1]}: {r[2]}", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("reply_ticket_"))
+async def start_reply_ticket(callback: CallbackQuery, state: FSMContext):
+    ticket_id = int(callback.data.split("_")[2])
+    await state.set_state(AdminStates.waiting_support_reply)
+    await state.update_data(ticket_id=ticket_id)
+    await callback.message.answer("Введите ответ:")
+    await callback.message.delete()
+
+@dp.message(AdminStates.waiting_support_reply)
+async def save_support_reply(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data['ticket_id']
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id FROM support_tickets WHERE id = ?", (ticket_id,)) as cur:
+            user_id = (await cur.fetchone())[0]
+        await db.execute(
+            "UPDATE support_tickets SET admin_reply = ?, status = 'replied' WHERE id = ?",
+            (message.text, ticket_id)
+        )
+        await db.commit()
+    await bot.send_message(user_id, f"Ответ от поддержки: {message.text}")
+    await state.clear()
+    await message.answer("Ответ отправлен пользователю!")
+
+@dp.callback_query(F.data == "admin_limits")
+async def admin_add_limits(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_limit_text)
+    await callback.message.edit_text("Отправьте текст для лимитов:")
+
+@dp.message(AdminStates.waiting_limit_text)
+async def save_limit_text(message: Message, state: FSMContext):
+    await state.update_data(limit_text=message.text)
+    await state.set_state(AdminStates.waiting_limit_file)
+    await message.answer("Теперь отправьте файл (документ) или /skip для пропуска:")
+
+@dp.message(AdminStates.waiting_limit_file, F.document)
+async def save_limit_file(message: Message, state: FSMContext):
+    data = await state.get_data()
+    file_id = message.document.file_id
+    text = data["limit_text"]
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO app_info (key, text, file_id) VALUES ('limits', ?, ?)",
+            (text, file_id)
+        )
+        await db.commit()
+    await state.clear()
+    await message.answer("✅ Информация о лимитах обновлена.")
+
+@dp.message(AdminStates.waiting_limit_file, F.text == "/skip")
+async def skip_limit_file(message: Message, state: FSMContext):
+    data = await state.get_data()
+    text = data["limit_text"]
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO app_info (key, text, file_id) VALUES ('limits', ?, NULL)",
+            (text,)
+        )
+        await db.commit()
+    await state.clear()
+    await message.answer("✅ Информация о лимитах обновлена (без файла).")
+
 # ====================== МАТЧИ ======================
 @dp.message(F.text == "Матчи")
 async def show_matches(message: Message):
@@ -294,7 +415,7 @@ async def give_match_file(callback: CallbackQuery):
     max_m = get_max_matches(sub, weekday)
     opened = await get_daily_count(callback.from_user.id)
 
-    if opened >= max_m and sub == "free":
+    if opened >= max_m:
         await callback.answer("Лимит на сегодня исчерпан. Купите подписку!", show_alert=True)
         return
 
@@ -316,6 +437,10 @@ async def give_match_file(callback: CallbackQuery):
     await callback.message.answer_document(file_id, caption="📊 Анализ и прогноз от Нейроаналитика")
     await callback.answer("✅ Файл отправлен!")
 
+@dp.callback_query(F.data.startswith("already_"))
+async def already_accessed(callback: CallbackQuery):
+    await callback.answer("Вы уже получили этот файл.")
+
 # ====================== ПОДПИСКА И ПЛАТЕЖИ ======================
 @dp.message(F.text == "Подписка")
 async def show_sub_menu(message: Message):
@@ -328,10 +453,10 @@ async def show_sub_menu(message: Message):
 async def create_invoice(callback: CallbackQuery):
     plan = callback.data
     prices = {
-        "silver_14": ("Silver 2 недели", 10000),
-        "silver_28": ("Silver месяц", 20000),
-        "gold_14": ("Gold 2 недели", 15000),
-        "gold_28": ("Gold месяц", 30000)
+        "sub_silver_14": ("Silver 2 недели", 10000),
+        "sub_silver_28": ("Silver месяц", 20000),
+        "sub_gold_14": ("Gold 2 недели", 15000),
+        "sub_gold_28": ("Gold месяц", 30000)
     }
     title, amount = prices.get(plan, ("Подписка", 10000))
 
@@ -348,9 +473,8 @@ async def create_invoice(callback: CallbackQuery):
 @dp.message(F.successful_payment)
 async def payment_success(message: Message):
     payload = message.successful_payment.invoice_payload
-    days = 14 if "14" in payload else 28
-    sub_type = payload
-
+    sub_type = payload[4:]  # "silver_14" etc.
+    days = 14 if "14" in sub_type else 28
     until = (datetime.now() + timedelta(days=days)).isoformat()
 
     async with aiosqlite.connect(DB_NAME) as db:
@@ -360,7 +484,7 @@ async def payment_success(message: Message):
         )
         await db.commit()
 
-    await message.answer(f"✅ Подписка {payload} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
+    await message.answer(f"✅ Подписка {sub_type} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
 @dp.message(F.text == "Канал")
@@ -373,7 +497,19 @@ async def send_live(message: Message):
 
 @dp.message(F.text == "Лимит")
 async def send_limit_info(message: Message):
-    await message.answer("Лимиты обновляются каждый день. Текущие лимиты зависят от вашей подписки.")
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT text, file_id FROM app_info WHERE key = 'limits'") as cur:
+            row = await cur.fetchone()
+    if not row:
+        await message.answer("Лимиты обновляются каждый день. Текущие лимиты зависят от вашей подписки.")
+        return
+    text, file_id = row
+    if file_id:
+        await message.answer_document(file_id, caption=text if text else "Информация о лимитах")
+    elif text:
+        await message.answer(text)
+    else:
+        await message.answer("Нет информации о лимитах.")
 
 @dp.message(F.text == "Политика и согласие")
 async def policy(message: Message):
