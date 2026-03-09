@@ -554,10 +554,16 @@ async def give_match_file(callback: CallbackQuery):
             return
         file_id = row[0]
 
-        await db.execute("INSERT OR IGNORE INTO user_match_access (telegram_id, match_id) VALUES (?, ?)", 
-                         (callback.from_user.id, match_id))
+        # ИСПРАВЛЕНИЕ: Получаем курсор и проверяем rowcount после INSERT OR IGNORE
+        cur = await db.execute("INSERT OR IGNORE INTO user_match_access (telegram_id, match_id) VALUES (?, ?)", 
+                               (callback.from_user.id, match_id))
         await db.commit()
+        if cur.rowcount == 0:
+            # Запись уже существовала — не отправляем файл и не инкрементируем лимит
+            await callback.answer("Вы уже получили этот файл.")
+            return
 
+    # Если новая запись вставлена, инкрементируем и отправляем
     await increment_daily(callback.from_user.id)
     await callback.message.answer_document(file_id, caption="📊 Анализ и прогноз от Нейроаналитика")
     await callback.answer("✅ Файл отправлен!")
