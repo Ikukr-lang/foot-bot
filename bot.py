@@ -144,6 +144,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS support_tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER,
+                username TEXT,
                 text TEXT,
                 status TEXT DEFAULT 'new',
                 admin_reply TEXT
@@ -151,9 +152,16 @@ async def init_db():
         ''')
         await db.commit()
 
-        # Миграция: добавляем колонку slot (если ещё нет)
+        # Миграция слотов (из предыдущей версии)
         try:
             await db.execute("ALTER TABLE matches ADD COLUMN slot INTEGER UNIQUE")
+            await db.commit()
+        except:
+            pass
+
+        # Миграция username в support_tickets
+        try:
+            await db.execute("ALTER TABLE support_tickets ADD COLUMN username TEXT")
             await db.commit()
         except:
             pass
@@ -162,8 +170,7 @@ async def init_db():
         async with db.execute("SELECT id FROM matches WHERE slot IS NULL ORDER BY id") as cur:
             old_matches = await cur.fetchall()
         for i, (mid,) in enumerate(old_matches, 1):
-            if i > 20:
-                break
+            if i > 20: break
             try:
                 await db.execute("UPDATE matches SET slot = ? WHERE id = ?", (i, mid))
                 await db.commit()
@@ -337,8 +344,13 @@ async def back_to_admin_menu(callback: CallbackQuery):
 @dp.callback_query(F.data == "admin_support")
 async def admin_show_support(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT id, telegram_id, text FROM support_tickets WHERE status = 'new'") as cur:
+        async with db.execute("""
+            SELECT id, telegram_id, username, text 
+            FROM support_tickets 
+            WHERE status = 'new'
+        """) as cur:
             rows = await cur.fetchall()
+
     if not rows:
         await callback.message.edit_text("Нет новых обращений в поддержку.")
         return
@@ -349,12 +361,25 @@ async def admin_show_support(callback: CallbackQuery):
 
     await callback.message.edit_reply_markup(reply_markup=await admin_keyboard())
 
-    await callback.message.answer("Обращения в поддержку:")
+    await callback.message.answer("📩 Обращения в поддержку:")
     for r in rows:
+        ticket_id, telegram_id, username, text = r
+        
+        # Кликабельный @ник
+        if username:
+            user_link = f'<a href="tg://user?id={telegram_id}">@{username}</a>'
+        else:
+            user_link = f'<a href="tg://user?id={telegram_id}">ID {telegram_id}</a>'
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Ответить", callback_data=f"reply_ticket_{r[0]}")]
+            [InlineKeyboardButton(text="Ответить", callback_data=f"reply_ticket_{ticket_id}")],
+            [InlineKeyboardButton(text="✉️ Написать в ЛС", url=f"tg://user?id={telegram_id}")]
         ])
-        await callback.message.answer(f"Обращение от {r[1]}: {r[2]}", reply_markup=kb)
+        
+        await callback.message.answer(
+            f"Обращение от {user_link}:\n\n{text}",
+            reply_markup=kb
+        )
 
 @dp.callback_query(F.data.startswith("reply_ticket_"))
 async def start_reply_ticket(callback: CallbackQuery, state: FSMContext):
@@ -562,12 +587,16 @@ async def start_support(message: Message, state: FSMContext):
 
 @dp.message(UserStates.waiting_support)
 async def save_support(message: Message, state: FSMContext):
+    username = message.from_user.username
     async with aiosqlite.connect(DB_NAME) as db:
-        cur = await db.execute("INSERT INTO support_tickets (telegram_id, text) VALUES (?, ?)", (message.from_user.id, message.text))
+        cur = await db.execute(
+            "INSERT INTO support_tickets (telegram_id, username, text) VALUES (?, ?, ?)",
+            (message.from_user.id, username, message.text)
+        )
         ticket_id = cur.lastrowid
         await db.commit()
     if ADMIN_ID:
-        await bot.send_message(int(ADMIN_ID), f"Новое обращение #{ticket_id} от {message.from_user.id}: {message.text}")
+        await bot.send_message(int(ADMIN_ID), f"Новое обращение #{ticket_id} от {message.from_user.id} (@{username or 'нет ника'}): {message.text}")
     global admin_chat_id, admin_message_id
     if admin_chat_id and admin_message_id:
         try:
