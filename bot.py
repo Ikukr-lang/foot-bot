@@ -559,7 +559,7 @@ async def give_match_file(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("already_"))
 async def already_accessed(callback: CallbackQuery):
-    await callback.answer("Вы уже получили этот файл.")
+    await callback.answer("⚠️ Вы уже получили файл этого матча.")
 
 # ====================== ПЛАТЕЖИ ======================
 @dp.message(F.text == "Подписка")
