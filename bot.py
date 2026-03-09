@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram import DefaultBotProperties
 
 # ====================== НАСТРОЙКИ justrunmy.app ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -25,7 +26,7 @@ ADMIN_PASSWORD = "ADMIN_PASSWORD"
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения justrunmy.app!")
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 DB_NAME = "bot.db"
