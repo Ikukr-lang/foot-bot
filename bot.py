@@ -637,7 +637,7 @@ async def show_limits(message: Message):
             current_val = limits_list[i]
     group_days = days[current_start] if current_start == 6 else f"{days[current_start]}-{days[6]}"
     groups.append(f"{group_days} ~ {current_val}")
-    text += "\n\nЛимиты по дням: " + ", ".join(groups)
+    text += "\n\nПо дням: " + ", ".join(groups)
 
     await message.answer(text)
 
