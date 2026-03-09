@@ -21,7 +21,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")          # пример: -1001234567890
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
-ADMIN_PASSWORD = "111"
+ADMIN_PASSWORD = "ADMIN_PASSWORD"
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения justrunmy.app!")
@@ -194,12 +194,12 @@ async def cmd_start(message: Message):
 
 Тебе не нужно тратить огромное количество времени для поиска статистики и анализа матча, так как это я уже сделал за тебя. 
 
+⛳️ Добро пожаловать! 
+Пользователей: <b>{count}</b>
+
 Все матчи и статистика уже доступны ~ ниже кнопка: «Матчи»
 Подпишись на наш канал чтобы быть в курсе событий ~ ниже кнопка: «Канал»
-Посмотри какие лимиты доступны ~ ниже кнопка: «Лимит»
-
-⛳️ Добро пожаловать! 
-Пользователей: <b>{count}</b>"""
+Посмотри какие лимиты доступны ~ ниже кнопка: «Лимит»"""
 
     await message.answer(text, reply_markup=main_keyboard())
 
