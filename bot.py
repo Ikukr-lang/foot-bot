@@ -48,7 +48,7 @@ def main_keyboard():
         [KeyboardButton(text="⚽️ Матчи")],
         [KeyboardButton(text="Поддержка")],
         [KeyboardButton(text="Live футбол")],
-        [KeyboardButton(text="💎 Подписка")],
+        [KeyboardButton(text="💎Подписка")],
         [KeyboardButton(text="Политика и согласие")]
     ], resize_keyboard=True)
     return kb
