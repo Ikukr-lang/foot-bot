@@ -21,7 +21,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
-ADMIN_PASSWORD = "ADMIN_PASSWORD"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN:
