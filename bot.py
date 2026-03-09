@@ -22,6 +22,7 @@ CHANNEL_ID = os.getenv("CHANNEL_ID")          # пример: -1001234567890
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
 ADMIN_PASSWORD = "ADMIN_PASSWORD"
+ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения justrunmy.app!")
@@ -30,6 +31,9 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 DB_NAME = "bot.db"
+
+admin_chat_id = None
+admin_message_id = None
 
 # ====================== FSM ======================
 class AdminStates(StatesGroup):
@@ -67,11 +71,18 @@ def policy_keyboard():
         [InlineKeyboardButton(text="Пользовательское соглашение", url="https://telegra.ph/Polzovatelskoe-soglashenie-08-15-10")]
     ])
 
-def admin_keyboard():
+async def get_new_tickets_count():
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM support_tickets WHERE status = 'new'") as cur:
+            return (await cur.fetchone())[0]
+
+async def admin_keyboard():
+    count = await get_new_tickets_count()
+    support_text = "💬 Поддержка" if count == 0 else f"💬 Поддержка ({count})"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить матч", callback_data="admin_add_match")],
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
-        [InlineKeyboardButton(text="💬 Поддержка", callback_data="admin_support")],
+        [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
         [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
         [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
     ])
@@ -204,7 +215,10 @@ async def admin_login(message: Message, state: FSMContext):
 async def check_admin_pass(message: Message, state: FSMContext):
     if message.text == ADMIN_PASSWORD:
         await state.clear()
-        await message.answer("✅ Добро пожаловать в админ-панель!", reply_markup=admin_keyboard())
+        msg = await message.answer("✅ Добро пожаловать в админ-панель!", reply_markup=await admin_keyboard())
+        global admin_chat_id, admin_message_id
+        admin_chat_id = msg.chat.id
+        admin_message_id = msg.message_id
     else:
         await message.answer("❌ Неверный пароль!")
 
@@ -249,7 +263,14 @@ async def admin_show_support(callback: CallbackQuery):
     if not rows:
         await callback.message.edit_text("Нет новых обращений в поддержку.")
         return
-    await callback.message.edit_text("Обращения в поддержку:")
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE support_tickets SET status = 'viewed' WHERE status = 'new'")
+        await db.commit()
+
+    await callback.message.edit_reply_markup(reply_markup=await admin_keyboard())
+
+    await callback.message.answer("Обращения в поддержку:")
     for r in rows:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Ответить", callback_data=f"reply_ticket_{r[0]}")]
@@ -279,6 +300,12 @@ async def save_support_reply(message: Message, state: FSMContext):
     await bot.send_message(user_id, f"Ответ от поддержки: {message.text}")
     await state.clear()
     await message.answer("Ответ отправлен пользователю!")
+    global admin_chat_id, admin_message_id
+    if admin_chat_id and admin_message_id:
+        try:
+            await bot.edit_message_reply_markup(chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=await admin_keyboard())
+        except:
+            pass
 
 # ====================== МАТЧИ ======================
 @dp.message(F.text == "Матчи")
@@ -452,8 +479,17 @@ async def start_support(message: Message, state: FSMContext):
 @dp.message(UserStates.waiting_support)
 async def save_support(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT INTO support_tickets (telegram_id, text) VALUES (?, ?)", (message.from_user.id, message.text))
+        cur = await db.execute("INSERT INTO support_tickets (telegram_id, text) VALUES (?, ?)", (message.from_user.id, message.text))
+        ticket_id = cur.lastrowid
         await db.commit()
+    if ADMIN_ID:
+        await bot.send_message(int(ADMIN_ID), f"Новое обращение #{ticket_id} от {message.from_user.id}: {message.text}")
+    global admin_chat_id, admin_message_id
+    if admin_chat_id and admin_message_id:
+        try:
+            await bot.edit_message_reply_markup(chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=await admin_keyboard())
+        except:
+            pass
     await state.clear()
     await message.answer("✅ Сообщение отправлено в поддержку!")
 
