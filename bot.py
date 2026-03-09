@@ -14,6 +14,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram.client.default import DefaultBotProperties
+from collections import defaultdict
 
 # ====================== НАСТРОЙКИ ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -51,6 +52,9 @@ class AdminStates(StatesGroup):
     waiting_match_file = State()
     waiting_support_reply = State()
     waiting_user_search = State()
+    waiting_bet_date = State()
+    waiting_positives = State()
+    waiting_negatives = State()
 
 class UserStates(StatesGroup):
     waiting_support = State()
@@ -95,6 +99,8 @@ async def admin_keyboard():
         [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
         [InlineKeyboardButton(text="📈 Подписки", callback_data="admin_subscriptions")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_bet_stats")],
+        [InlineKeyboardButton(text="🗑 Очистить статистику ставок", callback_data="admin_clear_bet_stats")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_close")],
     ])
 
@@ -123,6 +129,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS user_match_access (telegram_id INTEGER, match_id INTEGER, PRIMARY KEY (telegram_id, match_id));
             CREATE TABLE IF NOT EXISTS daily_usage (telegram_id INTEGER, date TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (telegram_id, date));
             CREATE TABLE IF NOT EXISTS support_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER, username TEXT, text TEXT, status TEXT DEFAULT 'new', admin_reply TEXT);
+            CREATE TABLE IF NOT EXISTS bet_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, bet_date TEXT, is_win INTEGER, coeff REAL);
         ''')
         await db.commit()
 
@@ -422,6 +429,22 @@ async def confirm_clear_all_matches(callback: CallbackQuery):
         await db.commit()
     await callback.message.edit_text("✅ Все матчи успешно очищены!", reply_markup=await admin_keyboard())
 
+# ====================== ОЧИСТКА СТАТИСТИКИ СТАВОК ======================
+@dp.callback_query(F.data == "admin_clear_bet_stats")
+async def admin_clear_bet_stats_confirm(callback: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, очистить статистику ставок", callback_data="confirm_clear_bet_stats")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text("<b>⚠️ ВНИМАНИЕ!</b>\n\nВы действительно хотите удалить всю статистику ставок?", reply_markup=kb)
+
+@dp.callback_query(F.data == "confirm_clear_bet_stats")
+async def confirm_clear_bet_stats(callback: CallbackQuery):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM bet_stats")
+        await db.commit()
+    await callback.message.edit_text("✅ Статистика ставок успешно очищена!", reply_markup=await admin_keyboard())
+
 @dp.callback_query(F.data == "admin_publish")
 async def publish_matches(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -505,6 +528,59 @@ async def save_support_reply(message: Message, state: FSMContext):
     await bot.send_message(user_id, f"✅ Ответ от поддержки:\n\n{message.text}")
     await state.clear()
     await message.answer("Ответ успешно отправлен!")
+
+# ====================== СТАТИСТИКА СТАВОК В АДМИНКЕ ======================
+@dp.callback_query(F.data == "admin_bet_stats")
+async def admin_bet_stats(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_bet_date)
+    await callback.message.edit_text("Введите дату для ставок (YYYY-MM-DD, или пусто для сегодняшней):")
+
+@dp.message(AdminStates.waiting_bet_date)
+async def process_bet_date(message: Message, state: FSMContext):
+    date_str = message.text.strip()
+    if not date_str:
+        date_str = moscow_today()
+    try:
+        datetime.fromisoformat(date_str)
+    except ValueError:
+        await message.answer("Неверный формат даты! Попробуйте снова.")
+        return
+    await state.update_data(bet_date=date_str)
+    await state.set_state(AdminStates.waiting_positives)
+    await message.answer("Введите положительные коэффициенты через запятую (выигранные ставки):")
+
+@dp.message(AdminStates.waiting_positives)
+async def process_positives(message: Message, state: FSMContext):
+    positives = message.text.strip()
+    await state.update_data(positives=positives)
+    await state.set_state(AdminStates.waiting_negatives)
+    await message.answer("Введите отрицательные коэффициенты через запятую (проигранные ставки):")
+
+@dp.message(AdminStates.waiting_negatives)
+async def process_negatives(message: Message, state: FSMContext):
+    data = await state.get_data()
+    bet_date = data['bet_date']
+    positives = data.get('positives', '')
+    negatives = message.text.strip()
+    async with aiosqlite.connect(DB_NAME) as db:
+        if positives:
+            for coeff_str in positives.split(','):
+                try:
+                    coeff = float(coeff_str.strip())
+                    await db.execute("INSERT INTO bet_stats (bet_date, is_win, coeff) VALUES (?, 1, ?)", (bet_date, coeff))
+                except ValueError:
+                    pass
+        if negatives:
+            for coeff_str in negatives.split(','):
+                try:
+                    coeff = float(coeff_str.strip())
+                    await db.execute("INSERT INTO bet_stats (bet_date, is_win, coeff) VALUES (?, 0, ?)", (bet_date, coeff))
+                except ValueError:
+                    pass
+        await db.commit()
+    await state.clear()
+    await message.answer("✅ Статистика ставок добавлена!")
+    await message.answer("Админ-панель:", reply_markup=await admin_keyboard())
 
 # ====================== МАТЧИ ======================
 @dp.message(F.text == "Матчи")
@@ -663,6 +739,39 @@ async def show_statistics(message: Message):
     if end:
         text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
     text += f"Лимит сегодня: {max_m}\nИспользовано сегодня: {opened_today}"
+
+    # Добавляем статистику ставок (ROI)
+    text += "\n\n<b>Статистика ставок (ROI):</b>\n"
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT bet_date, is_win, coeff FROM bet_stats ORDER BY bet_date") as cur:
+            bets = await cur.fetchall()
+    if not bets:
+        text += "Нет данных.\n"
+    else:
+        monthly_p = defaultdict(float)
+        yearly_p = defaultdict(float)
+        total_p = 0.0
+        for bet_date, is_win, coeff in bets:
+            year_month = bet_date[:7]  # YYYY-MM
+            year = bet_date[:4]
+            if is_win:
+                profit = 100 * (coeff - 1)
+            else:
+                profit = -100
+            monthly_p[year_month] += profit
+            yearly_p[year] += profit
+            total_p += profit
+        text += "<b>По месяцам:</b>\n"
+        for ym in sorted(monthly_p):
+            roi = (monthly_p[ym] / 1000) * 100
+            text += f"{ym}: {roi:.2f}%\n"
+        text += "\n<b>По годам:</b>\n"
+        for y in sorted(yearly_p):
+            roi = (yearly_p[y] / 1000) * 100
+            text += f"{y}: {roi:.2f}%\n"
+        total_roi = (total_p / 1000) * 100
+        text += f"\n<b>Общий:</b> {total_roi:.2f}%\n"
+
     await message.answer(text)
 
 @dp.message(F.text == "Live футбол")
