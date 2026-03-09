@@ -131,11 +131,6 @@ async def get_users_count():
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             return (await cur.fetchone())[0]
 
-async def add_or_update_user(user_id: int, username: str):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT OR IGNORE INTO users (telegram_id, username) VALUES (?, ?)", (user_id, username))
-        await db.commit()
-
 # ====================== ЛИМИТЫ (по Москве) ======================
 def get_max_matches(sub_type: str, weekday: int) -> int:
     if sub_type == "gold_28": return [5,5,5,5,10,20,20][weekday]
@@ -231,7 +226,21 @@ async def get_matching_users(search: str):
 # ====================== СТАРТ ======================
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await add_or_update_user(message.from_user.id, message.from_user.username)
+    user_id = message.from_user.id
+    username = message.from_user.username
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT subscription FROM users WHERE telegram_id=?", (user_id,)) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            # new user, give gift
+            sub_type = "silver_28"
+            until = (moscow_now() + timedelta(days=5)).replace(tzinfo=None).isoformat()
+            await db.execute("INSERT INTO users (telegram_id, username, subscription, sub_end) VALUES (?, ?, ?, ?)", (user_id, username, sub_type, until))
+            await message.answer("🎁 Добро пожаловать! Вы получили подарок от администрации: Silver месяц на 5 дней!")
+        else:
+            # existing user, update username
+            await db.execute("UPDATE users SET username=? WHERE telegram_id=?", (username, user_id))
+        await db.commit()
     count = await get_users_count()
     text = f"""👋 Привет я Нейроаналитик 🤖
 
