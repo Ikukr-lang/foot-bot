@@ -21,7 +21,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_PASSWORD = "ADMIN_PASSWORD"
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN:
@@ -83,6 +83,7 @@ async def admin_keyboard():
         [InlineKeyboardButton(text="➕ Добавить матч", callback_data="admin_add_match")],
         [InlineKeyboardButton(text="📋 Просмотр слотов", callback_data="admin_view_slots")],
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
+        [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],  # ← НОВАЯ КНОПКА
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
         [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
         [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
@@ -152,7 +153,7 @@ async def init_db():
         ''')
         await db.commit()
 
-        # Миграция слотов (из предыдущей версии)
+        # Миграция слотов
         try:
             await db.execute("ALTER TABLE matches ADD COLUMN slot INTEGER UNIQUE")
             await db.commit()
@@ -272,6 +273,7 @@ async def check_admin_pass(message: Message, state: FSMContext):
     else:
         await message.answer("❌ Неверный пароль!")
 
+# ====================== ДОБАВЛЕНИЕ МАТЧЕЙ (слоты 1-20) ======================
 @dp.callback_query(F.data == "admin_add_match")
 async def admin_add_match(callback: CallbackQuery):
     await callback.message.edit_text(
@@ -316,6 +318,35 @@ async def save_match_file(message: Message, state: FSMContext):
     await message.answer(f"✅ Матч сохранён в <b>Слот {slot}</b>!")
     await message.answer("Админ-панель:", reply_markup=await admin_keyboard())
 
+# ====================== ОЧИСТКА ВСЕХ МАТЧЕЙ ======================
+@dp.callback_query(F.data == "admin_clear_matches")
+async def admin_clear_confirm(callback: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, очистить ВСЁ", callback_data="confirm_clear_all")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_admin")]
+    ])
+    await callback.message.edit_text(
+        "<b>⚠️ ВНИМАНИЕ!</b>\n\n"
+        "Вы действительно хотите <b>удалить все матчи</b>?\n"
+        "Все 20 слотов будут полностью очищены.\n"
+        "Это действие нельзя отменить!",
+        reply_markup=kb
+    )
+
+@dp.callback_query(F.data == "confirm_clear_all")
+async def confirm_clear_all_matches(callback: CallbackQuery):
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("DELETE FROM matches")
+        await db.execute("DELETE FROM user_match_access")  # очищаем доступы пользователей
+        await db.commit()
+
+    await callback.message.edit_text(
+        "✅ <b>Все матчи успешно очищены!</b>\n"
+        "Все слоты 1–20 теперь свободны.",
+        reply_markup=await admin_keyboard()
+    )
+
+# ====================== ОСТАЛЬНЫЕ ФУНКЦИИ АДМИНКИ ======================
 @dp.callback_query(F.data == "admin_publish")
 async def publish_matches(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -364,8 +395,6 @@ async def admin_show_support(callback: CallbackQuery):
     await callback.message.answer("📩 Обращения в поддержку:")
     for r in rows:
         ticket_id, telegram_id, username, text = r
-        
-        # Кликабельный @ник
         if username:
             user_link = f'<a href="tg://user?id={telegram_id}">@{username}</a>'
         else:
