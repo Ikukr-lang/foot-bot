@@ -1,4 +1,4 @@
-import asyncio
+    import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
@@ -70,14 +70,12 @@ def policy_keyboard():
     ])
 
 def admin_keyboard():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Добавить матч", callback_data="admin_add_match")],
-        [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
-        [InlineKeyboardButton(text="💬 Поддержка", callback_data="admin_support")],
-        [InlineKeyboardButton(text="⭐ Отзывы", callback_data="admin_reviews")],
-        [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
-        [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
-    ])
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="➕ Добавить матч"), KeyboardButton(text="📢 Опубликовать матчи")],
+        [KeyboardButton(text="💬 Поддержка"), KeyboardButton(text="⭐ Отзывы")],
+        [KeyboardButton(text="💰 Платные подписки"), KeyboardButton(text="🎁 Подарок")]
+    ], resize_keyboard=True)
+    return kb
 
 # ====================== БАЗА ДАННЫХ ======================
 async def init_db():
@@ -217,10 +215,10 @@ async def check_admin_pass(message: Message, state: FSMContext):
     else:
         await message.answer("❌ Неверный пароль!")
 
-@dp.callback_query(F.data == "admin_add_match")
-async def admin_add_match(callback: CallbackQuery, state: FSMContext):
+@dp.message(F.text == "➕ Добавить матч")
+async def admin_add_match(message: Message, state: FSMContext):
     await state.set_state(AdminStates.waiting_match_text)
-    await callback.message.edit_text("Отправьте текст события (матч):")
+    await message.answer("Отправьте текст события (матч):")
 
 @dp.message(AdminStates.waiting_match_text)
 async def save_match_text(message: Message, state: FSMContext):
@@ -243,19 +241,150 @@ async def save_match_file(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Матч добавлен (не опубликован).")
 
-@dp.callback_query(F.data == "admin_publish")
-async def publish_matches(callback: CallbackQuery):
+@dp.message(F.text == "📢 Опубликовать матчи")
+async def publish_matches(message: Message):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE matches SET is_published = 1 WHERE is_published = 0")
         await db.commit()
-    await callback.message.edit_text("✅ Все матчи опубликованы!")
+    await message.answer("✅ Все матчи опубликованы!")
+
+@dp.message(F.text == "💬 Поддержка")
+async def admin_support(message: Message):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT id, telegram_id, text FROM support_tickets WHERE status = 'new'") as cur:
+            tickets = await cur.fetchall()
+
+    if not tickets:
+        await message.answer("Нет новых сообщений в поддержке.")
+        return
+
+    kb = []
+    for tid, uid, text in tickets:
+        kb.append([InlineKeyboardButton(text=f"Ticket {tid} from {uid}", callback_data=f"support_{tid}")])
+
+    await message.answer("Новые тикеты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("support_"))
+async def admin_reply_support(callback: CallbackQuery, state: FSMContext):
+    tid = int(callback.data.split("_")[1])
+    await state.set_state(AdminStates.waiting_support_reply)
+    await state.update_data(ticket_id=tid)
+    await callback.message.edit_text("Отправьте ответ для тикета:")
+
+@dp.message(AdminStates.waiting_support_reply)
+async def save_support_reply(message: Message, state: FSMContext):
+    data = await state.get_data()
+    tid = data["ticket_id"]
+    reply = message.text
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE support_tickets SET admin_reply = ?, status = 'replied' WHERE id = ?", (reply, tid))
+        await db.commit()
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id FROM support_tickets WHERE id = ?", (tid,)) as cur:
+            uid = (await cur.fetchone())[0]
+
+    await bot.send_message(uid, f"Ответ от поддержки: {reply}")
+    await state.clear()
+    await message.answer("✅ Ответ отправлен!")
+
+@dp.message(F.text == "⭐ Отзывы")
+async def admin_reviews(message: Message):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT id, telegram_id, text FROM reviews WHERE status = 'pending'") as cur:
+            reviews = await cur.fetchall()
+
+    if not reviews:
+        await message.answer("Нет отзывов на модерации.")
+        return
+
+    kb = []
+    for rid, uid, text in reviews:
+        kb.append([InlineKeyboardButton(text=f"Review {rid} from {uid}", callback_data=f"review_{rid}")])
+
+    await message.answer("Отзывы на модерации:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("review_"))
+async def admin_review_action(callback: CallbackQuery):
+    rid = int(callback.data.split("_")[1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT text FROM reviews WHERE id = ?", (rid,)) as cur:
+            text = (await cur.fetchone())[0]
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Approve", callback_data=f"approve_{rid}"),
+         InlineKeyboardButton(text="Reject", callback_data=f"reject_{rid}")]
+    ])
+    await callback.message.edit_text(f"Отзыв: {text}", reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve_review(callback: CallbackQuery):
+    rid = int(callback.data.split("_")[1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE reviews SET status = 'approved' WHERE id = ?", (rid,))
+        await db.commit()
+    await callback.message.edit_text("✅ Отзыв одобрен!")
+
+@dp.callback_query(F.data.startswith("reject_"))
+async def reject_review(callback: CallbackQuery):
+    rid = int(callback.data.split("_")[1])
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE reviews SET status = 'rejected' WHERE id = ?", (rid,))
+        await db.commit()
+    await callback.message.edit_text("❌ Отзыв отклонен!")
+
+@dp.message(F.text == "💰 Платные подписки")
+async def admin_paid_subs(message: Message):
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id, username, subscription, sub_end FROM users WHERE subscription != 'free'") as cur:
+            subs = await cur.fetchall()
+
+    if not subs:
+        await message.answer("Нет платных подписок.")
+        return
+
+    text = "Платные подписки:\n"
+    for uid, uname, sub, end in subs:
+        text += f"{uname} ({uid}): {sub} до {end}\n"
+    await message.answer(text)
+
+@dp.message(F.text == "🎁 Подарок")
+async def admin_gift(message: Message, state: FSMContext):
+    await state.set_state(AdminStates.waiting_gift_user)
+    await message.answer("Отправьте telegram_id пользователя и тип подписки (например: 123456 gold_28)")
+
+@dp.message(AdminStates.waiting_gift_user)
+async def save_gift(message: Message, state: FSMContext):
+    parts = message.text.split()
+    if len(parts) != 2:
+        await message.answer("Неверный формат.")
+        return
+    try:
+        uid = int(parts[0])
+    except:
+        await message.answer("Неверный id.")
+        return
+    sub_type = parts[1]
+    days = 14 if "14" in sub_type else 28 if "28" in sub_type else 0
+    if days == 0:
+        await message.answer("Неверный тип.")
+        return
+    until = (datetime.now() + timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?",
+            (sub_type, until, uid)
+        )
+        await db.commit()
+    await state.clear()
+    await message.answer("✅ Подарок отправлен!")
 
 # ====================== МАТЧИ ======================
 @dp.message(F.text == "Матчи")
 async def show_matches(message: Message):
     sub, _ = await get_subscription(message.from_user.id)
     try:
-        member = await bot.get_chat_member(CHANNEL_ID, message.from_user.id)
+        member = await bot.get_chat_member(int(CHANNEL_ID), message.from_user.id)
         subscribed = member.status in ["member", "administrator", "creator"]
     except:
         subscribed = False
@@ -295,8 +424,8 @@ async def give_match_file(callback: CallbackQuery):
     max_m = get_max_matches(sub, weekday)
     opened = await get_daily_count(callback.from_user.id)
 
-    if opened >= max_m and sub == "free":
-        await callback.answer("Лимит на сегодня исчерпан. Купите подписку!", show_alert=True)
+    if opened >= max_m:
+        await callback.answer("Лимит на сегодня исчерпан!", show_alert=True)
         return
 
     async with aiosqlite.connect(DB_NAME) as db:
@@ -317,6 +446,10 @@ async def give_match_file(callback: CallbackQuery):
     await callback.message.answer_document(file_id, caption="📊 Анализ и прогноз от Нейроаналитика")
     await callback.answer("✅ Файл отправлен!")
 
+@dp.callback_query(F.data.startswith("already_"))
+async def already_opened(callback: CallbackQuery):
+    await callback.answer("Вы уже открыли этот матч.", show_alert=True)
+
 # ====================== ПОДПИСКА И ПЛАТЕЖИ ======================
 @dp.message(F.text == "Подписка")
 async def show_sub_menu(message: Message):
@@ -329,10 +462,10 @@ async def show_sub_menu(message: Message):
 async def create_invoice(callback: CallbackQuery):
     plan = callback.data
     prices = {
-        "silver_14": ("Silver 2 недели", 10000),
-        "silver_28": ("Silver месяц", 20000),
-        "gold_14": ("Gold 2 недели", 15000),
-        "gold_28": ("Gold месяц", 30000)
+        "sub_silver_14": ("Silver 2 недели", 10000),
+        "sub_silver_28": ("Silver месяц", 20000),
+        "sub_gold_14": ("Gold 2 недели", 15000),
+        "sub_gold_28": ("Gold месяц", 30000)
     }
     title, amount = prices.get(plan, ("Подписка", 10000))
 
@@ -349,8 +482,8 @@ async def create_invoice(callback: CallbackQuery):
 @dp.message(F.successful_payment)
 async def payment_success(message: Message):
     payload = message.successful_payment.invoice_payload
-    days = 14 if "14" in payload else 28
-    sub_type = payload
+    sub_type = payload.replace("sub_", "")
+    days = 14 if "14" in sub_type else 28
 
     until = (datetime.now() + timedelta(days=days)).isoformat()
 
@@ -361,7 +494,7 @@ async def payment_success(message: Message):
         )
         await db.commit()
 
-    await message.answer(f"✅ Подписка {payload} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
+    await message.answer(f"✅ Подписка {sub_type} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
 @dp.message(F.text == "Канал")
@@ -374,7 +507,16 @@ async def send_live(message: Message):
 
 @dp.message(F.text == "Лимит")
 async def send_limit_info(message: Message):
-    await message.answer("Лимиты обновляются каждый день. Текущие лимиты зависят от вашей подписки.")
+    sub, end = await get_subscription(message.from_user.id)
+    weekday = datetime.now().weekday()
+    max_m = get_max_matches(sub, weekday)
+    used = await get_daily_count(message.from_user.id)
+    text = f"Ваша подписка: {sub}"
+    if end:
+        text += f" до {end}"
+    text += f"\nЛимит на сегодня: {max_m} матчей"
+    text += f"\nИспользовано: {used}"
+    await message.answer(text)
 
 @dp.message(F.text == "Политика и согласие")
 async def policy(message: Message):
