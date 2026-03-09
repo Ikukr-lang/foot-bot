@@ -45,11 +45,9 @@ class UserStates(StatesGroup):
 # ====================== КЛАВИАТУРЫ ======================
 def main_keyboard():
     kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Матчи")],
-        [KeyboardButton(text="Поддержка")],
-        [KeyboardButton(text="Live футбол")],
-        [KeyboardButton(text="Подписка")],
-        [KeyboardButton(text="Политика и согласие")]
+        [KeyboardButton(text="Матчи"), KeyboardButton(text="Канал"), KeyboardButton(text="Лимит")],
+        [KeyboardButton(text="Поддержка"), KeyboardButton(text="Live футбол")],
+        [KeyboardButton(text="Подписка"), KeyboardButton(text="Политика и согласие")]
     ], resize_keyboard=True)
     return kb
 
@@ -397,6 +395,23 @@ async def payment_success(message: Message):
     await message.answer(f"✅ Подписка {sub_type} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
+@dp.message(F.text == "Канал")
+async def send_channel(message: Message):
+    await message.answer(f"Подпишись на наш канал чтобы быть в курсе событий: {CHANNEL_LINK}")
+
+@dp.message(F.text == "Лимит")
+async def show_limits(message: Message):
+    sub, end = await get_subscription(message.from_user.id)
+    weekday = datetime.now().weekday()
+    max_m = get_max_matches(sub, weekday)
+    opened = await get_daily_count(message.from_user.id)
+    text = f"Ваша подписка: {sub}\n"
+    if end:
+        text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
+    text += f"Лимит матчей на сегодня: {max_m}\n"
+    text += f"Использовано сегодня: {opened}"
+    await message.answer(text)
+
 @dp.message(F.text == "Live футбол")
 async def send_live(message: Message):
     await message.answer("Live футбол:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Смотреть Live", url=LIVE_LINK)]]))
