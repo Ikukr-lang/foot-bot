@@ -21,7 +21,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")          # пример: -1001234567890
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
-ADMIN_PASSWORD = "ADMIN_PASSWORD"
+ADMIN_PASSWORD = "123"
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения justrunmy.app!")
