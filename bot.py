@@ -608,7 +608,7 @@ async def payment_success(message: Message):
             await db.execute("INSERT INTO users (telegram_id, username, subscription, sub_end) VALUES (?, ?, ?, ?)", (user_id, username, sub_type, until))
         await db.commit()
 
-    await message.answer(f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
+    await message.answer(f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\nТеперь у тебя повышенные лимиты")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
 @dp.message(F.text == "Канал")
