@@ -454,7 +454,7 @@ async def payment_success(message: Message):
     payload = message.successful_payment.invoice_payload
     sub_type = payload.removeprefix("sub_")
     days = 14 if "14" in sub_type else 28
-    until = (moscow_now() + timedelta(days=days)).isoformat()
+    until = (moscow_now() + timedelta(days=days)).replace(tzinfo=None).isoformat()
 
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?",
@@ -478,6 +478,23 @@ async def show_limits(message: Message):
     if end:
         text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
     text += f"Лимит матчей на сегодня: {max_m}\nИспользовано сегодня: {opened}"
+
+    # Добавляем лимиты по дням
+    days = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
+    limits_list = [get_max_matches(sub, i) for i in range(7)]
+    groups = []
+    current_start = 0
+    current_val = limits_list[0]
+    for i in range(1, 7):
+        if limits_list[i] != current_val:
+            group_days = days[current_start] if current_start == i - 1 else f"{days[current_start]}-{days[i - 1]}"
+            groups.append(f"{group_days} ~ {current_val}")
+            current_start = i
+            current_val = limits_list[i]
+    group_days = days[current_start] if current_start == 6 else f"{days[current_start]}-{days[6]}"
+    groups.append(f"{group_days} ~ {current_val}")
+    text += "\n\nЛимиты по дням: " + ", ".join(groups)
+
     await message.answer(text)
 
 @dp.message(F.text == "Статистика")
