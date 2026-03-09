@@ -17,7 +17,7 @@ from aiogram.client.default import DefaultBotProperties
 
 # ====================== НАСТРОЙКИ ======================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")  # Для реальных платежей используйте реальный токен от провайдера (например, Yandex.Kassa, Tinkoff или другого, поддерживаемого Telegram Payments). Не используйте тестовый токен для production.
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
@@ -26,6 +26,9 @@ ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения!")
+
+if not PROVIDER_TOKEN:
+    raise ValueError("❌ PROVIDER_TOKEN не задан в переменных окружения! Для реальных платежей получите токен от платежного провайдера.")
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher(storage=MemoryStorage())
