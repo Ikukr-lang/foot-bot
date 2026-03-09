@@ -83,7 +83,7 @@ async def admin_keyboard():
         [InlineKeyboardButton(text="➕ Добавить матч", callback_data="admin_add_match")],
         [InlineKeyboardButton(text="📋 Просмотр слотов", callback_data="admin_view_slots")],
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
-        [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],  # ← НОВАЯ КНОПКА
+        [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
         [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
         [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
@@ -191,6 +191,36 @@ async def add_or_update_user(user_id: int, username: str):
         )
         await db.commit()
 
+# ====================== ЛИМИТЫ ПОДПИСОК ======================
+def get_max_matches(sub_type: str, weekday: int) -> int:
+    """Возвращает дневной лимит матчей согласно новому ТЗ
+    weekday: 0=Пн ... 6=Вс"""
+    if sub_type == "gold_28":
+        return 999  # Gold месяц — неограниченно
+
+    if sub_type == "gold_14":
+        return [5, 5, 5, 5, 8, 17, 17][weekday]      # Gold 2 недели
+
+    if sub_type == "silver_28":
+        return [3, 3, 3, 3, 5, 12, 12][weekday]      # Silver месяц
+
+    if sub_type == "silver_14":
+        return [3, 3, 3, 3, 4, 10, 10][weekday]      # Silver 2 недели (Пт = 4)
+
+    # Free (бесплатно)
+    return [1, 1, 1, 1, 2, 2, 2][weekday]
+
+def get_sub_name(sub_type: str) -> str:
+    """Красивое название подписки для пользователя"""
+    names = {
+        "free": "Free (бесплатно)",
+        "silver_14": "Silver • 2 недели",
+        "silver_28": "Silver • 1 месяц",
+        "gold_14": "Gold • 2 недели",
+        "gold_28": "Gold • 1 месяц"
+    }
+    return names.get(sub_type, sub_type)
+
 async def get_subscription(user_id: int):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute(
@@ -199,24 +229,33 @@ async def get_subscription(user_id: int):
             row = await cur.fetchone()
             if not row:
                 return "free", None
+
             sub, end = row
             if end and datetime.fromisoformat(end) < datetime.now():
+                # Обнуляем подписку
                 await db.execute(
                     "UPDATE users SET subscription='free', sub_end=NULL WHERE telegram_id=?",
                     (user_id,)
                 )
                 await db.commit()
+                
+                # Уведомляем пользователя (согласно ТЗ)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "❌ <b>Ваша подписка закончилась</b>\n\n"
+                        "Теперь у вас тариф <b>Free</b> (бесплатно).\n"
+                        "Лимиты снижены до базовых:\n"
+                        "Пн–Чт — 1 матч\n"
+                        "Пт–Вс — 2 матча в день"
+                    )
+                except Exception as e:
+                    logging.error(f"Не удалось отправить уведомление об окончании подписки пользователю {user_id}: {e}")
+                
                 return "free", None
             return sub, end
 
-# ====================== ЛИМИТЫ ======================
-def get_max_matches(sub_type: str, weekday: int) -> int:
-    if sub_type == "gold_28": return 999
-    if sub_type == "gold_14": return [5,5,5,5,8,17,17][weekday]
-    if sub_type == "silver_28": return [3,3,3,3,5,12,12][weekday]
-    if sub_type == "silver_14": return [3,3,3,3,5,10,10][weekday]
-    return [1,1,1,1,2,2,2][weekday]
-
+# ====================== ДНЕВНОЙ СЧЁТЧИК ======================
 async def get_daily_count(user_id: int) -> int:
     today = datetime.now().date().isoformat()
     async with aiosqlite.connect(DB_NAME) as db:
@@ -559,7 +598,10 @@ async def payment_success(message: Message):
         )
         await db.commit()
 
-    await message.answer(f"✅ Подписка {sub_type} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
+    await message.answer(
+        f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\n"
+        f"Теперь у тебя повышенные лимиты 🔥"
+    )
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
 @dp.message(F.text == "Канал")
@@ -572,7 +614,8 @@ async def show_limits(message: Message):
     weekday = datetime.now().weekday()
     max_m = get_max_matches(sub, weekday)
     opened = await get_daily_count(message.from_user.id)
-    text = f"Ваша подписка: {sub}\n"
+    sub_name = get_sub_name(sub)
+    text = f"Ваша подписка: <b>{sub_name}</b>\n"
     if end:
         text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
     text += f"Лимит матчей на сегодня: {max_m}\n"
@@ -589,11 +632,12 @@ async def show_statistics(message: Message):
     opened_today = await get_daily_count(message.from_user.id)
     weekday = datetime.now().weekday()
     max_m = get_max_matches(sub, weekday)
+    sub_name = get_sub_name(sub)
     text = f"Общая статистика бота:\n"
     text += f"Пользователей: {count}\n"
     text += f"Матчей: {matches_count}\n\n"
     text += f"Ваша статистика:\n"
-    text += f"Подписка: {sub}\n"
+    text += f"Подписка: <b>{sub_name}</b>\n"
     if end:
         text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
     text += f"Лимит сегодня: {max_m}\n"
