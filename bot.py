@@ -45,9 +45,11 @@ class UserStates(StatesGroup):
 # ====================== КЛАВИАТУРЫ ======================
 def main_keyboard():
     kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Матчи"), KeyboardButton(text="Канал"), KeyboardButton(text="Лимит")],
+        [KeyboardButton(text="Матчи"), KeyboardButton(text="Статистика")],
+        [KeyboardButton(text="Канал"), KeyboardButton(text="Лимит")],
         [KeyboardButton(text="Поддержка"), KeyboardButton(text="Live футбол")],
-        [KeyboardButton(text="Подписка"), KeyboardButton(text="Политика и согласие")]
+        [KeyboardButton(text="Подписка")],
+        [KeyboardButton(text="Политика и согласие")]
     ], resize_keyboard=True)
     return kb
 
@@ -410,6 +412,27 @@ async def show_limits(message: Message):
         text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
     text += f"Лимит матчей на сегодня: {max_m}\n"
     text += f"Использовано сегодня: {opened}"
+    await message.answer(text)
+
+@dp.message(F.text == "Статистика")
+async def show_statistics(message: Message):
+    count = await get_users_count()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT COUNT(*) FROM matches") as cur:
+            matches_count = (await cur.fetchone())[0]
+    sub, end = await get_subscription(message.from_user.id)
+    opened_today = await get_daily_count(message.from_user.id)
+    weekday = datetime.now().weekday()
+    max_m = get_max_matches(sub, weekday)
+    text = f"Общая статистика бота:\n"
+    text += f"Пользователей: {count}\n"
+    text += f"Матчей: {matches_count}\n\n"
+    text += f"Ваша статистика:\n"
+    text += f"Подписка: {sub}\n"
+    if end:
+        text += f"Истекает: {datetime.fromisoformat(end).strftime('%Y-%m-%d %H:%M')}\n"
+    text += f"Лимит сегодня: {max_m}\n"
+    text += f"Использовано сегодня: {opened_today}"
     await message.answer(text)
 
 @dp.message(F.text == "Live футбол")
