@@ -21,7 +21,7 @@ PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")          # пример: -1001234567890
 CHANNEL_LINK = "https://t.me/goal90stat"
 LIVE_LINK = "http://t.me/Sp0rtplusbot/sp0rt"
-ADMIN_PASSWORD = "RD"
+ADMIN_PASSWORD = "ADMIN_PASSWORD"
 
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан в переменных окружения justrunmy.app!")
@@ -37,21 +37,17 @@ class AdminStates(StatesGroup):
     waiting_match_text = State()
     waiting_match_file = State()
     waiting_support_reply = State()
-    waiting_review_action = State()
     waiting_gift_user = State()
-    waiting_limit_text = State()
-    waiting_limit_file = State()
 
 class UserStates(StatesGroup):
-    waiting_review = State()
     waiting_support = State()
 
 # ====================== КЛАВИАТУРЫ ======================
 def main_keyboard():
     kb = ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="Матчи"), KeyboardButton(text="Канал")],
-        [KeyboardButton(text="Поддержка"), KeyboardButton(text="Отзывы")],
-        [KeyboardButton(text="Live футбол"), KeyboardButton(text="Лимит")],
+        [KeyboardButton(text="Матчи")],
+        [KeyboardButton(text="Поддержка")],
+        [KeyboardButton(text="Live футбол")],
         [KeyboardButton(text="Подписка")],
         [KeyboardButton(text="Политика и согласие")]
     ], resize_keyboard=True)
@@ -76,8 +72,6 @@ def admin_keyboard():
         [InlineKeyboardButton(text="➕ Добавить матч", callback_data="admin_add_match")],
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
         [InlineKeyboardButton(text="💬 Поддержка", callback_data="admin_support")],
-        [InlineKeyboardButton(text="⭐ Отзывы", callback_data="admin_reviews")],
-        [InlineKeyboardButton(text="📊 Лимиты", callback_data="admin_limits")],
         [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
         [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
     ])
@@ -110,23 +104,12 @@ async def init_db():
                 count INTEGER DEFAULT 0,
                 PRIMARY KEY (telegram_id, date)
             );
-            CREATE TABLE IF NOT EXISTS reviews (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER,
-                text TEXT,
-                status TEXT DEFAULT 'pending'
-            );
             CREATE TABLE IF NOT EXISTS support_tickets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER,
                 text TEXT,
                 status TEXT DEFAULT 'new',
                 admin_reply TEXT
-            );
-            CREATE TABLE IF NOT EXISTS app_info (
-                key TEXT PRIMARY KEY,
-                text TEXT,
-                file_id TEXT
             );
         ''')
         await db.commit()
@@ -258,42 +241,6 @@ async def publish_matches(callback: CallbackQuery):
         await db.commit()
     await callback.message.edit_text("✅ Все матчи опубликованы!")
 
-@dp.callback_query(F.data == "admin_reviews")
-async def admin_show_reviews(callback: CallbackQuery):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT id, telegram_id, text FROM reviews WHERE status = 'pending'") as cur:
-            rows = await cur.fetchall()
-    if not rows:
-        await callback.message.edit_text("Нет отзывов на модерации.")
-        return
-    await callback.message.edit_text("Отзывы на модерации:")
-    for r in rows:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="Одобрить", callback_data=f"approve_review_{r[0]}"),
-                InlineKeyboardButton(text="Отклонить", callback_data=f"reject_review_{r[0]}")
-            ]
-        ])
-        await callback.message.answer(f"Отзыв от {r[1]}: {r[2]}", reply_markup=kb)
-
-@dp.callback_query(F.data.startswith("approve_review_"))
-async def approve_review(callback: CallbackQuery):
-    review_id = int(callback.data.split("_")[2])
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE reviews SET status = 'approved' WHERE id = ?", (review_id,))
-        await db.commit()
-    await callback.answer("Отзыв одобрен!")
-    await callback.message.delete()
-
-@dp.callback_query(F.data.startswith("reject_review_"))
-async def reject_review(callback: CallbackQuery):
-    review_id = int(callback.data.split("_")[2])
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("UPDATE reviews SET status = 'rejected' WHERE id = ?", (review_id,))
-        await db.commit()
-    await callback.answer("Отзыв отклонен!")
-    await callback.message.delete()
-
 @dp.callback_query(F.data == "admin_support")
 async def admin_show_support(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -332,44 +279,6 @@ async def save_support_reply(message: Message, state: FSMContext):
     await bot.send_message(user_id, f"Ответ от поддержки: {message.text}")
     await state.clear()
     await message.answer("Ответ отправлен пользователю!")
-
-@dp.callback_query(F.data == "admin_limits")
-async def admin_add_limits(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_limit_text)
-    await callback.message.edit_text("Отправьте текст для лимитов:")
-
-@dp.message(AdminStates.waiting_limit_text)
-async def save_limit_text(message: Message, state: FSMContext):
-    await state.update_data(limit_text=message.text)
-    await state.set_state(AdminStates.waiting_limit_file)
-    await message.answer("Теперь отправьте файл (документ) или /skip для пропуска:")
-
-@dp.message(AdminStates.waiting_limit_file, F.document)
-async def save_limit_file(message: Message, state: FSMContext):
-    data = await state.get_data()
-    file_id = message.document.file_id
-    text = data["limit_text"]
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO app_info (key, text, file_id) VALUES ('limits', ?, ?)",
-            (text, file_id)
-        )
-        await db.commit()
-    await state.clear()
-    await message.answer("✅ Информация о лимитах обновлена.")
-
-@dp.message(AdminStates.waiting_limit_file, F.text == "/skip")
-async def skip_limit_file(message: Message, state: FSMContext):
-    data = await state.get_data()
-    text = data["limit_text"]
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO app_info (key, text, file_id) VALUES ('limits', ?, NULL)",
-            (text,)
-        )
-        await db.commit()
-    await state.clear()
-    await message.answer("✅ Информация о лимитах обновлена (без файла).")
 
 # ====================== МАТЧИ ======================
 @dp.message(F.text == "Матчи")
@@ -488,47 +397,13 @@ async def payment_success(message: Message):
     await message.answer(f"✅ Подписка {sub_type} активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
-@dp.message(F.text == "Канал")
-async def send_channel(message: Message):
-    await message.answer("Подписывайся на канал:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Канал", url=CHANNEL_LINK)]]))
-
 @dp.message(F.text == "Live футбол")
 async def send_live(message: Message):
     await message.answer("Live футбол:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Смотреть Live", url=LIVE_LINK)]]))
 
-@dp.message(F.text == "Лимит")
-async def send_limit_info(message: Message):
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT text, file_id FROM app_info WHERE key = 'limits'") as cur:
-            row = await cur.fetchone()
-    if not row:
-        await message.answer("Лимиты обновляются каждый день. Текущие лимиты зависят от вашей подписки.")
-        return
-    text, file_id = row
-    if file_id:
-        await message.answer_document(file_id, caption=text if text else "Информация о лимитах")
-    elif text:
-        await message.answer(text)
-    else:
-        await message.answer("Нет информации о лимитах.")
-
 @dp.message(F.text == "Политика и согласие")
 async def policy(message: Message):
     await message.answer("Выберите документ:", reply_markup=policy_keyboard())
-
-# ====================== ОТЗЫВЫ ======================
-@dp.message(F.text == "Отзывы")
-async def start_review(message: Message, state: FSMContext):
-    await state.set_state(UserStates.waiting_review)
-    await message.answer("Напишите свой отзыв:")
-
-@dp.message(UserStates.waiting_review)
-async def save_review(message: Message, state: FSMContext):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("INSERT INTO reviews (telegram_id, text) VALUES (?, ?)", (message.from_user.id, message.text))
-        await db.commit()
-    await state.clear()
-    await message.answer("✅ Отзыв отправлен на модерацию!")
 
 # ====================== ПОДДЕРЖКА ======================
 @dp.message(F.text == "Поддержка")
