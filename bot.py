@@ -135,7 +135,7 @@ async def add_or_update_user(user_id: int, username: str):
 
 # ====================== ЛИМИТЫ (по Москве) ======================
 def get_max_matches(sub_type: str, weekday: int) -> int:
-    if sub_type == "gold_28": return 999
+    if sub_type == "gold_28": return [5,5,5,5,10,20,20][weekday]
     if sub_type == "gold_14":   return [5,5,5,5,8,17,17][weekday]
     if sub_type == "silver_28": return [3,3,3,3,5,12,12][weekday]
     if sub_type == "silver_14": return [3,3,3,3,4,10,10][weekday]
