@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import (
@@ -35,13 +35,21 @@ DB_NAME = "bot.db"
 admin_chat_id = None
 admin_message_id = None
 
+# ====================== МОСКОВСКОЕ ВРЕМЯ ======================
+MOSCOW_TZ = timezone(timedelta(hours=3))
+
+def moscow_now():
+    return datetime.now(MOSCOW_TZ)
+
+def moscow_today():
+    return moscow_now().date().isoformat()
+
 # ====================== FSM ======================
 class AdminStates(StatesGroup):
     waiting_password = State()
     waiting_match_text = State()
     waiting_match_file = State()
     waiting_support_reply = State()
-    waiting_gift_user = State()
 
 class UserStates(StatesGroup):
     waiting_support = State()
@@ -71,7 +79,6 @@ def policy_keyboard():
         [InlineKeyboardButton(text="Пользовательское соглашение", url="https://telegra.ph/Polzovatelskoe-soglashenie-08-15-10")]
     ])
 
-# ====================== АДМИН КЛАВИАТУРА ======================
 async def get_new_tickets_count():
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT COUNT(*) FROM support_tickets WHERE status = 'new'") as cur:
@@ -86,8 +93,6 @@ async def admin_keyboard():
         [InlineKeyboardButton(text="📢 Опубликовать все матчи", callback_data="admin_publish")],
         [InlineKeyboardButton(text="🗑 Очистить все матчи", callback_data="admin_clear_matches")],
         [InlineKeyboardButton(text=support_text, callback_data="admin_support")],
-        [InlineKeyboardButton(text="💰 Платные подписки", callback_data="admin_paid_subs")],
-        [InlineKeyboardButton(text="🎁 Подарок подписки", callback_data="admin_gift")],
     ])
 
 # ====================== СЛОТЫ ======================
@@ -99,7 +104,6 @@ async def get_all_slots():
 async def slots_keyboard():
     slots_data = await get_all_slots()
     occupied = {row[0]: row[1][:35] + "..." if len(row[1]) > 35 else row[1] for row in slots_data}
-    
     kb = []
     for i in range(1, 21):
         text = f"✅ Слот {i} | {occupied[i]}" if i in occupied else f"□ Слот {i} — свободен"
@@ -119,16 +123,6 @@ async def init_db():
         ''')
         await db.commit()
 
-        # Миграции (оставлены для совместимости)
-        try:
-            await db.execute("ALTER TABLE matches ADD COLUMN slot INTEGER UNIQUE")
-            await db.commit()
-        except: pass
-        try:
-            await db.execute("ALTER TABLE support_tickets ADD COLUMN username TEXT")
-            await db.commit()
-        except: pass
-
 async def get_users_count():
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
@@ -139,13 +133,13 @@ async def add_or_update_user(user_id: int, username: str):
         await db.execute("INSERT OR IGNORE INTO users (telegram_id, username) VALUES (?, ?)", (user_id, username))
         await db.commit()
 
-# ====================== ЛИМИТЫ ПОДПИСОК (по вашему ТЗ) ======================
+# ====================== ЛИМИТЫ (по Москве) ======================
 def get_max_matches(sub_type: str, weekday: int) -> int:
     if sub_type == "gold_28": return 999
     if sub_type == "gold_14":   return [5,5,5,5,8,17,17][weekday]
     if sub_type == "silver_28": return [3,3,3,3,5,12,12][weekday]
     if sub_type == "silver_14": return [3,3,3,3,4,10,10][weekday]
-    return [1,1,1,1,2,2,2][weekday]  # free
+    return [1,1,1,1,2,2,2][weekday]
 
 def get_sub_name(sub_type: str) -> str:
     names = {
@@ -164,7 +158,7 @@ async def get_subscription(user_id: int):
             if not row:
                 return "free", None
             sub, end = row
-            if end and datetime.fromisoformat(end) < datetime.now():
+            if end and datetime.fromisoformat(end) < moscow_now().replace(tzinfo=None):
                 await db.execute("UPDATE users SET subscription='free', sub_end=NULL WHERE telegram_id=?", (user_id,))
                 await db.commit()
                 try:
@@ -173,16 +167,16 @@ async def get_subscription(user_id: int):
                 return "free", None
             return sub, end
 
-# ====================== ДНЕВНОЙ СЧЁТЧИК ======================
+# ====================== ДНЕВНОЙ СЧЁТЧИК (по Москве) ======================
 async def get_daily_count(user_id: int) -> int:
-    today = datetime.now().date().isoformat()
+    today = moscow_today()
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT count FROM daily_usage WHERE telegram_id=? AND date=?", (user_id, today)) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
 
 async def increment_daily(user_id: int):
-    today = datetime.now().date().isoformat()
+    today = moscow_today()
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("""
             INSERT OR REPLACE INTO daily_usage (telegram_id, date, count)
@@ -277,7 +271,6 @@ async def confirm_clear_all_matches(callback: CallbackQuery):
         await db.commit()
     await callback.message.edit_text("✅ Все матчи успешно очищены!", reply_markup=await admin_keyboard())
 
-# ====================== ОСТАЛЬНЫЕ АДМИН ФУНКЦИИ ======================
 @dp.callback_query(F.data == "admin_publish")
 async def publish_matches(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
@@ -302,8 +295,65 @@ async def admin_view_slots(callback: CallbackQuery):
 async def back_to_admin_menu(callback: CallbackQuery):
     await callback.message.edit_text("✅ Добро пожаловать в админ-панель!", reply_markup=await admin_keyboard())
 
-# ====================== ПОДДЕРЖКА ======================
-# (оставлена без изменений — работает)
+# ====================== ПОДДЕРЖКА В АДМИНКЕ (ПОЧИНЕНО) ======================
+@dp.callback_query(F.data == "admin_support")
+async def admin_show_support(callback: CallbackQuery):
+    await callback.answer()
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("""
+            SELECT id, telegram_id, username, text 
+            FROM support_tickets WHERE status = 'new'
+        """) as cur:
+            rows = await cur.fetchall()
+
+    if not rows:
+        await callback.message.answer("✅ Нет новых обращений в поддержку.")
+        return
+
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute("UPDATE support_tickets SET status = 'viewed' WHERE status = 'new'")
+        await db.commit()
+
+    await callback.message.answer(f"📩 Найдено новых обращений: <b>{len(rows)}</b>")
+
+    for r in rows:
+        ticket_id, telegram_id, username, text = r
+        user_link = f'<a href="tg://user?id={telegram_id}">@{username}</a>' if username else f'<a href="tg://user?id={telegram_id}">ID {telegram_id}</a>'
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Ответить", callback_data=f"reply_ticket_{ticket_id}")],
+            [InlineKeyboardButton(text="✉️ Написать в ЛС", url=f"tg://user?id={telegram_id}")]
+        ])
+        
+        await callback.message.answer(f"Обращение от {user_link}:\n\n{text}", reply_markup=kb)
+
+    # Обновляем главную панель админа
+    if admin_chat_id and admin_message_id:
+        try:
+            await bot.edit_message_reply_markup(chat_id=admin_chat_id, message_id=admin_message_id, reply_markup=await admin_keyboard())
+        except:
+            pass
+
+@dp.callback_query(F.data.startswith("reply_ticket_"))
+async def start_reply_ticket(callback: CallbackQuery, state: FSMContext):
+    ticket_id = int(callback.data.split("_")[2])
+    await state.set_state(AdminStates.waiting_support_reply)
+    await state.update_data(ticket_id=ticket_id)
+    await callback.message.answer("Введите ответ пользователю:")
+    await callback.message.delete()
+
+@dp.message(AdminStates.waiting_support_reply)
+async def save_support_reply(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data['ticket_id']
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT telegram_id FROM support_tickets WHERE id = ?", (ticket_id,)) as cur:
+            user_id = (await cur.fetchone())[0]
+        await db.execute("UPDATE support_tickets SET admin_reply = ?, status = 'replied' WHERE id = ?", (message.text, ticket_id))
+        await db.commit()
+    await bot.send_message(user_id, f"✅ Ответ от поддержки:\n\n{message.text}")
+    await state.clear()
+    await message.answer("Ответ успешно отправлен!")
 
 # ====================== МАТЧИ ======================
 @dp.message(F.text == "Матчи")
@@ -341,7 +391,7 @@ async def show_matches(message: Message):
 async def give_match_file(callback: CallbackQuery):
     match_id = int(callback.data.split("_")[1])
     sub, _ = await get_subscription(callback.from_user.id)
-    weekday = datetime.now().weekday()
+    weekday = moscow_now().weekday()
     max_m = get_max_matches(sub, weekday)
     opened = await get_daily_count(callback.from_user.id)
 
@@ -352,7 +402,7 @@ async def give_match_file(callback: CallbackQuery):
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute("SELECT file_id FROM matches WHERE id=?", (match_id,)) as cur:
             row = await cur.fetchone()
-        if not row: 
+        if not row:
             await callback.answer("Файл не найден")
             return
         file_id = row[0]
@@ -369,11 +419,10 @@ async def give_match_file(callback: CallbackQuery):
 async def already_accessed(callback: CallbackQuery):
     await callback.answer("Вы уже получили этот файл.")
 
-# ====================== ПЛАТЕЖИ (ИСПРАВЛЕНО!) ======================
+# ====================== ПЛАТЕЖИ ======================
 @dp.message(F.text == "Подписка")
 async def show_sub_menu(message: Message):
-    await message.answer("Выберите подписку ниже 👇\n\nПосле оплаты лимиты увеличатся автоматически!", 
-                         reply_markup=payment_keyboard())
+    await message.answer("Выберите подписку ниже 👇\n\nПосле оплаты лимиты увеличатся автоматически!", reply_markup=payment_keyboard())
 
 @dp.callback_query(F.data.startswith("sub_"))
 async def create_invoice(callback: CallbackQuery):
@@ -396,31 +445,23 @@ async def create_invoice(callback: CallbackQuery):
         prices=[LabeledPrice(label=title, amount=amount)]
     )
 
-# ==================== ОБЯЗАТЕЛЬНЫЙ ХЕНДЛЕР (БЫЛ ПРОПУЩЕН!) ====================
 @dp.pre_checkout_query()
 async def pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
-    """ОБЯЗАТЕЛЬНО для всех платежей ЮKassa"""
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-    logging.info(f"✅ Pre-checkout подтверждён для пользователя {pre_checkout_query.from_user.id}")
 
 @dp.message(F.successful_payment)
 async def payment_success(message: Message):
     payload = message.successful_payment.invoice_payload
     sub_type = payload.removeprefix("sub_")
     days = 14 if "14" in sub_type else 28
-    until = (datetime.now() + timedelta(days=days)).isoformat()
+    until = (moscow_now() + timedelta(days=days)).isoformat()
 
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute("UPDATE users SET subscription=?, sub_end=? WHERE telegram_id=?",
                          (sub_type, until, message.from_user.id))
         await db.commit()
 
-    logging.info(f"💰 Успешная оплата! Пользователь {message.from_user.id} → {sub_type}")
-
-    await message.answer(
-        f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\n"
-        f"Теперь у тебя повышенные лимиты 🔥"
-    )
+    await message.answer(f"✅ Подписка <b>{get_sub_name(sub_type)}</b> активирована на {days} дней!\nТеперь у тебя повышенные лимиты 🔥")
 
 # ====================== ОСТАЛЬНЫЕ КНОПКИ ======================
 @dp.message(F.text == "Канал")
@@ -430,7 +471,7 @@ async def send_channel(message: Message):
 @dp.message(F.text == "Лимит")
 async def show_limits(message: Message):
     sub, end = await get_subscription(message.from_user.id)
-    weekday = datetime.now().weekday()
+    weekday = moscow_now().weekday()
     max_m = get_max_matches(sub, weekday)
     opened = await get_daily_count(message.from_user.id)
     text = f"Ваша подписка: <b>{get_sub_name(sub)}</b>\n"
@@ -447,7 +488,7 @@ async def show_statistics(message: Message):
             matches_count = (await cur.fetchone())[0]
     sub, end = await get_subscription(message.from_user.id)
     opened_today = await get_daily_count(message.from_user.id)
-    weekday = datetime.now().weekday()
+    weekday = moscow_now().weekday()
     max_m = get_max_matches(sub, weekday)
     text = f"Общая статистика бота:\nПользователей: {count}\nМатчей: {matches_count}\n\n"
     text += f"Ваша статистика:\nПодписка: <b>{get_sub_name(sub)}</b>\n"
@@ -464,7 +505,7 @@ async def send_live(message: Message):
 async def policy(message: Message):
     await message.answer("Выберите документ:", reply_markup=policy_keyboard())
 
-# ====================== ПОДДЕРЖКА ======================
+# ====================== ПОДДЕРЖКА (пользователь) ======================
 @dp.message(F.text == "Поддержка")
 async def start_support(message: Message, state: FSMContext):
     await state.set_state(UserStates.waiting_support)
@@ -476,10 +517,9 @@ async def save_support(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_NAME) as db:
         cur = await db.execute("INSERT INTO support_tickets (telegram_id, username, text) VALUES (?, ?, ?)",
                                (message.from_user.id, username, message.text))
-        ticket_id = cur.lastrowid
         await db.commit()
     if ADMIN_ID:
-        await bot.send_message(int(ADMIN_ID), f"Новое обращение #{ticket_id} от {message.from_user.id} (@{username or 'нет ника'}): {message.text}")
+        await bot.send_message(int(ADMIN_ID), f"Новое обращение от {message.from_user.id} (@{username or 'нет'}): {message.text}")
     await state.clear()
     await message.answer("✅ Сообщение отправлено в поддержку!")
 
@@ -487,7 +527,7 @@ async def save_support(message: Message, state: FSMContext):
 async def main():
     await init_db()
     scheduler.start()
-    logging.info("🚀 Бот запущен")
+    logging.info("🚀 Бот запущен (время Москвы)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
