@@ -5,14 +5,13 @@ from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message
-import random
 import math
-import os  # ← НОВОЕ: для переменной окружения
+import os
+from dotenv import load_dotenv  # ← НОВОЕ
 
-# ================== НАСТРОЙКИ (ПЕРЕМЕННАЯ НА БОТУ) ==================
-# На BotHost зайди в настройки бота → "Environment variables" и добавь:
-# Имя: BOT_TOKEN
-# Значение: твой токен от @BotFather
+# ================== ЗАГРУЗКА ПЕРЕМЕННЫХ ==================
+load_dotenv()  # Загружает .env (для локального теста) + переменные с BotHost
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 if not BOT_TOKEN:
@@ -21,9 +20,7 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# (весь остальной код без изменений)
-
-# Таблица конвертации рейтингов...
+# ================== ТАБЛИЦА РЕЙТИНГОВ (без изменений) ==================
 LEVELS = {
     "wretched": 1.0, "poor": 2.0, "weak": 3.0, "inadequate": 4.0,
     "passable": 5.0, "solid": 6.0, "excellent": 7.0, "formidable": 8.0,
@@ -42,14 +39,12 @@ def text_to_rating(text: str) -> float:
                 if sub_name in text:
                     val += add
                     break
-            if "high" in text and "very" not in text:
-                val += 0.25
-            elif "low" in text and "very" not in text:
-                val -= 0.25
+            if "high" in text and "very" not in text: val += 0.25
+            elif "low" in text and "very" not in text: val -= 0.25
             return round(val, 2)
     return 5.0
 
-# ================== ОСНОВНАЯ ФУНКЦИЯ РАСЧЁТА (без изменений) ==================
+# ================== РАСЧЁТ МАТЧА (без изменений) ==================
 def calculate_match_prob(home_ratings: dict, away_ratings: dict, poss45: float, poss90: float):
     mid_h = home_ratings["mid"]
     mid_a = away_ratings["mid"]
@@ -98,10 +93,10 @@ def parse_match(url: str):
 
     poss_text = soup.get_text()
     poss45 = poss90 = 50.0
-    match = re.search(r"45'\D*(\d+)%", poss_text)
-    if match: poss45 = float(match.group(1))
-    match = re.search(r"90'\D*(\d+)%", poss_text)
-    if match: poss90 = float(match.group(1))
+    m = re.search(r"45'\D*(\d+)%", poss_text)
+    if m: poss45 = float(m.group(1))
+    m = re.search(r"90'\D*(\d+)%", poss_text)
+    if m: poss90 = float(m.group(1))
 
     ratings = re.findall(r'(Wretched|Poor|Weak|Inadequate|Passable|Solid|Excellent|Formidable|Outstanding|Brilliant|Magnificent|World Class|Supernatural|Titanic|Extraterrestrial|Mythical|Utopian|Divine)\s*[-–]?\s*(very low|low|high|very high)?', poss_text, re.I)
 
@@ -121,10 +116,10 @@ def parse_match(url: str):
 
     return home, away, poss45, poss90
 
-# ================== КОМАНДЫ БОТА (без изменений) ==================
+# ================== КОМАНДЫ (без изменений) ==================
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer("Отправь ссылку на матч Hattrick\nЯ посчитаю точные % на основе рейтингов 1-й и последней минуты + possession.")
+    await message.answer("Отправь ссылку на матч Hattrick — посчитаю точные %!")
 
 @dp.message(F.text.regexp(r"hattrick\.org.*MatchID=\d+"))
 async def process_match(message: Message):
@@ -139,7 +134,7 @@ async def process_match(message: Message):
                 f"🏠 Победа хозяев: {win_h}%\n"
                 f"🤝 Ничья: {draw}%\n"
                 f"🏟️ Победа гостей: {win_a}%\n\n"
-                f"Использовал: рейтинги (1-я минута → конец) + possession 45'/90'.")
+                f"Рейтинги 1-я минута → конец + possession.")
         await message.answer(text)
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
@@ -149,4 +144,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())        
+    asyncio.run(main())
