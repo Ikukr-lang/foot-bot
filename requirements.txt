@@ -1,5 +1,6 @@
-aiogram
-requests
-beautifulsoup4
+aiogram==3.13.1
 python-dotenv
 cloudscraper
+beautifulsoup4
+pytesseract
+Pillow
